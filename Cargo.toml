@@ -1,0 +1,8 @@
+[package]
+name = "RInjector"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+console = "0.15.10"
+injrs = "0.1.2"
