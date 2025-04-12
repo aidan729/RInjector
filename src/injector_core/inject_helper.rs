@@ -1,19 +1,15 @@
-use std::io::{stdout, Write};
-use std::thread;
-use std::time::Duration;
-
-use super::injector::*;
+use super::injector::{Injector, InjectionMethod};
 use super::process::Process;
+use std::time::Duration;
+use std::thread;
+use std::io::{stdout, Write};
 
 #[allow(dead_code)]
 pub fn validate_dll_path(dll_path: &str) -> bool {
     if std::path::Path::new(dll_path).exists() {
         true
     } else {
-        println!(
-            "Error: DLL not found at {}. Ensure the file exists.",
-            dll_path
-        );
+        println!("DLL not found: {}", dll_path);
         false
     }
 }
@@ -23,16 +19,14 @@ pub fn wait_for_process(process_name: &str, retry_interval: Duration) -> Option<
     let mut anim_index = 0;
 
     loop {
-        match Process::find_first_by_name(process_name) {
+        let proc_found = Process::find_first_by_name(process_name);
+        match proc_found {
             Some(proc) => {
-                println!("\nProcess '{}' found with PID: {}", process_name, proc.pid);
+                println!("\nProcess '{}' found (PID: {})", process_name, proc.pid);
                 return Some(proc);
             }
             None => {
-                print!(
-                    "\rWaiting for process '{}'... {}",
-                    process_name, animation[anim_index]
-                );
+                print!("\rWaiting for process '{}'... {}", process_name, animation[anim_index]);
                 stdout().flush().unwrap();
                 anim_index = (anim_index + 1) % animation.len();
                 thread::sleep(retry_interval);
@@ -41,11 +35,11 @@ pub fn wait_for_process(process_name: &str, retry_interval: Duration) -> Option<
     }
 }
 
+/// By default uses LoadLibrary injection, but you could pass method as an argument
 pub fn inject_dll(process: &Process, dll_path: &str) -> Result<(), String> {
-    println!("Attempting to inject DLL...");
-    match process.inject(dll_path) {
+    match process.inject_with_method(dll_path, InjectionMethod::LoadLibrary) {
         Ok(_) => {
-            println!("Successfully injected DLL into process with PID: {}", process.pid);
+            println!("DLL injected into PID: {}", process.pid);
             Ok(())
         }
         Err(e) => Err(format!("DLL injection failed: {}", e)),
