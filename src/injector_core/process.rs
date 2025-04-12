@@ -96,7 +96,7 @@ impl Process {
         todo!()
     }
 
-
+    #[allow(dead_code)]
     pub fn is_wow64(&self) -> Result<bool, io::Error> {
         let mut is_wow64 = MaybeUninit::uninit();
         let r = unsafe{IsWow64Process(self.handle, is_wow64.as_mut_ptr())};

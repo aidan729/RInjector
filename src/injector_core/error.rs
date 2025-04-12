@@ -15,11 +15,11 @@ impl Win32Error {
     }
 }
 
-// Marking Win32Error as `Sync` and `Send` safely
+// marking Win32Error as `Sync` and `Send` safely
 unsafe impl Sync for Win32Error {}
 unsafe impl Send for Win32Error {}
 
-// Implementing Display for Win32Error
+// implementing Display for Win32Error
 impl fmt::Display for Win32Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.message.as_ref() {

@@ -1,11 +1,10 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // Hide console window on Windows in release
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use std::collections::VecDeque;
-use std::time::Duration;
 use eframe::egui;
 use rfd::FileDialog;
 
-// Bring your injector trait into scope so methods like `eject()` work:
+// bring  injector trait into scope so methods like `eject()` work:
 use injector_core::injector::Injector;
 use injector_core::inject_helper;
 use injector_core::process::Process;
@@ -21,7 +20,7 @@ mod injector_core {
     pub mod winapi;
 }
 
-/// Our main egui application
+/// main egui application
 struct MyApp {
     // ---- Process selection stuff
     process_search: String,
@@ -59,7 +58,7 @@ impl Default for MyApp {
 
 impl MyApp {
     fn log(&mut self, msg: &str) {
-        // Limit logs to 300 lines or so
+        // limit logs to 300 lines or so
         if self.logs.len() >= 300 {
             self.logs.pop_front();
         }
@@ -69,12 +68,12 @@ impl MyApp {
 
     fn refresh_process_list(&mut self) {
         self.log("Refreshing process list...");
-        // Save the search text now to avoid borrow conflicts
+        // save the search text now to avoid borrow conflicts
         let search_lower = self.process_search.to_lowercase();
 
         match injector_core::process::find_process_by_name("") {
             Ok(all_processes) => {
-                // Filter them
+                // filter them
                 let filtered: Vec<Process> = all_processes
                     .into_iter()
                     .filter(|proc| proc.name.to_lowercase().contains(&search_lower))
@@ -86,7 +85,7 @@ impl MyApp {
         }
     }
 
-    /// Inject the entire DLL list into the selected process
+    /// inject the entire DLL list into the selected process
     fn inject_selected(&mut self) {
         let process_idx = match self.selected_process {
             Some(idx) => idx,
@@ -101,7 +100,7 @@ impl MyApp {
             return;
         }
 
-        // Copy needed data from `self` to avoid overlapping borrows:
+        // copy needed data from `self` to avoid overlapping borrows:
         let proc_obj = self.process_list[process_idx].clone();
         let method = self.injection_method;
         let dll_list = self.dll_list.clone();
@@ -111,7 +110,7 @@ impl MyApp {
             proc_obj.name, proc_obj.pid, method
         ));
 
-        // Example: each DLL is attempted in turn
+        // each DLL is attempted in turn
         for dll_path in dll_list {
             // Validate
             if !inject_helper::validate_dll_path(&dll_path) {
@@ -119,8 +118,7 @@ impl MyApp {
                 continue;
             }
 
-            // If you have a specialized injection function for each method, call it here.
-            // For now, let’s just call the existing .inject() from the trait (LoadLibrary).
+            // for now, let’s just call the existing .inject() from the trait (LoadLibrary).
             match proc_obj.inject_with_method(&dll_path, method) {
                 Ok(_) => self.log(&format!("Successfully injected: {}", dll_path)),
                 Err(e) => self.log(&format!("Error injecting {}: {}", dll_path, e)),
@@ -242,6 +240,7 @@ impl eframe::App for MyApp {
                         ui.selectable_value(&mut self.injection_method, InjectionMethod::LoadLibrary, "LoadLibrary");
                         ui.selectable_value(&mut self.injection_method, InjectionMethod::NtCreateThreadEx, "NtCreateThreadEx");
                         ui.selectable_value(&mut self.injection_method, InjectionMethod::ManualMap, "ManualMap");
+                        ui.selectable_value(&mut self.injection_method, InjectionMethod::ThreadHijack, "ThreadHijack");
                     });
             });
 

@@ -1,7 +1,18 @@
+// For NtCreateThreadEx you also need:
+pub use winapi::shared::ntdef::OBJECT_ATTRIBUTES;
+
+// For specifying stack sizes and other pointer-sized fields (64-bit)
+pub use winapi::shared::basetsd::SIZE_T;
+
+// For remote-thread function pointer
+pub use winapi::um::minwinbase::LPTHREAD_START_ROUTINE;
+
+pub use winapi::ctypes::c_void;
 
 pub use winapi::shared::ntdef::{
     HANDLE,
     NULL,
+    NTSTATUS,
 };
 
 pub use winapi::shared::minwindef::{
@@ -9,7 +20,9 @@ pub use winapi::shared::minwindef::{
     TRUE,
     MAX_PATH,
     DWORD,
-    HMODULE
+    HMODULE,
+    LPVOID,
+    LPCVOID,
 };
 
 pub use winapi::um::processthreadsapi::{
@@ -84,4 +97,18 @@ pub use winapi::um::winbase::{
 
 pub use winapi::um::securitybaseapi::{
     AdjustTokenPrivileges
+};
+
+pub use winapi::um::tlhelp32::{
+    THREADENTRY32, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
+};
+
+pub use winapi::um::processthreadsapi::{
+    OpenThread, SuspendThread, ResumeThread,
+    GetThreadContext, SetThreadContext,
+};
+
+pub use winapi::um::winnt::{
+    CONTEXT, CONTEXT_FULL, /* flags for 64-bit context */
+    THREAD_SUSPEND_RESUME, THREAD_GET_CONTEXT, THREAD_SET_CONTEXT,
 };
