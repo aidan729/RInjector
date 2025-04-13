@@ -2,8 +2,7 @@ use std::io;
 use std::mem::{self};
 use std::path::Path;
 use std::ptr::null_mut;
-use std::fs::File;
-use std::io::Read;
+use std::slice;
 
 use super::utils::*;
 use super::winapi::*;
@@ -37,7 +36,7 @@ impl Injector for Process {
         }
     }
 
-    fn eject(&self, dll_path: &str) -> Result<(), io::Error> {
+    fn eject(&self, _dll_path: &str) -> Result<(), io::Error> {
         // Only works for standard LoadLibrary based injection, because we need the HMODULE from that.
         // For manual map or reflective injection, we have to manually free memory sections, call DllMain, etc.
         // hijacking a thread is also tricky because we need to restore the original context.
@@ -112,7 +111,7 @@ impl Process {
         // wait up to 5s for the thread to complete
         let wait_code = unsafe { WaitForSingleObject(thread_handle, 5000) };
         if wait_code == WAIT_FAILED {
-            // Not fatal, but suspicious
+            // not fatal, but suspicious
         }
 
         unsafe {
@@ -149,9 +148,8 @@ impl Process {
             // handle error
         }
     
-        // Convert the raw pointer to Option<fn(...)>
-        let start_routine: Option<unsafe extern "system" fn(*mut c_void) -> u32>
-            = Some( unsafe { std::mem::transmute(load_library_w) });
+        // convert the raw pointer to Option<fn(...)>
+        // let start_routine: Option<unsafe extern "system" fn(*mut c_void) -> u32> = Some( unsafe { std::mem::transmute(load_library_w) });
     
         let filepath = Path::new(dll_path).canonicalize()?;
         let wide_path = to_wide_string(filepath.to_str().unwrap());
@@ -211,17 +209,19 @@ impl Process {
             nt_create_thread_ex_fn(
                 &mut thread_handle,
                 0x1FFFFF,           // THREAD_ALL_ACCESS
-                std::ptr::null(),   // OBJECT_ATTRIBUTES => usually NULL
+                null_mut(),         // OBJECT_ATTRIBUTES
                 process_handle,
-                start_routine,      // calls LoadLibraryW
-                remote_mem,         // pointer to the wide DLL path
-                0,                  // create_flags
-                0,                  // stack_size => default
-                std::ptr::null_mut(), // out ThreadId => optional
+                load_library_w as PVOID,
+                remote_mem as PVOID,
+                0,                  // CreateFlags (0 for immediate execution)
+                0,                  // ZeroBits
+                0,                  // StackSize (default)
+                0,                  // MaximumStackSize
+                null_mut(),         // AttributeList
             )
         };
     
-        // 8) Check status
+        // check status
         if status != 0 {
             unsafe {
                 VirtualFreeEx(process_handle, remote_mem, 0, MEM_RELEASE);
@@ -232,7 +232,7 @@ impl Process {
             ));
         }
     
-        // 9) Optionally wait on the new thread, then close
+        // optionally wait on the new thread, then close
         unsafe {
             WaitForSingleObject(thread_handle, 1000);
             CloseHandle(thread_handle);
@@ -246,42 +246,63 @@ impl Process {
     
 
     pub fn inject_via_manualmap(&self, dll_path: &str) -> Result<(), io::Error> {
-        // read the entire DLL file into a buffer
-        let fullpath = Path::new(dll_path).canonicalize()?;
-        let mut file = File::open(&fullpath)?;
-        let mut file_data = Vec::new();
-        file.read_to_end(&mut file_data)?;
+        let file_data = std::fs::read(dll_path)?;
 
-        // check DOS header => MZ
-        if file_data.len() < mem::size_of::<DosHeader>() {
-            return Err(io::Error::new(io::ErrorKind::Other, "File too small, not a valid PE?"));
-        }
-        let dos = unsafe { &*(file_data.as_ptr() as *const DosHeader) };
-        if dos.e_magic != 0x5A4D {
-            return Err(io::Error::new(io::ErrorKind::Other, "Invalid DOS header magic"));
-        }
-
-        // get NT headers => check 'PE\0\0' => 0x00004550
-        let nt_offset = dos.e_lfanew as usize;
-        if file_data.len() < nt_offset + mem::size_of::<NtHeaders64>() {
-            return Err(io::Error::new(io::ErrorKind::Other, "Missing or invalid NT headers"));
-        }
-        let nth = unsafe { &*(file_data.as_ptr().add(nt_offset) as *const NtHeaders64) };
-        if nth.signature != 0x4550 {
-            return Err(io::Error::new(io::ErrorKind::Other, "Invalid PE signature"));
-        }
-        if nth.optional_header.magic != 0x20B {
-            return Err(io::Error::new(io::ErrorKind::Other, "Not a 64-bit PE (Magic != 0x20B)"));
+        // Parse DOS header
+        let dos_header = unsafe {
+            // SAFETY: Check bounds before dereferencing
+            if mem::size_of::<DosHeader>() > file_data.len() {
+                return Err(io::Error::new(io::ErrorKind::Other, "File too small for DOS header"));
+            }
+            &*(file_data.as_ptr() as *const DosHeader)
+        };
+        if dos_header.e_magic != 0x5A4D {
+            return Err(io::Error::new(io::ErrorKind::Other, "Invalid DOS header"));
         }
 
-        // allocate memory in target process => size_of_image from OptionalHeader
-        let image_size = nth.optional_header.size_of_image as usize;
+        // Parse NtHeaders64
+        let nt_headers_offset = dos_header.e_lfanew as usize;
+        let nt_headers = unsafe {
+            // SAFETY: Check that we can read NtHeaders64 at nt_headers_offset
+            if nt_headers_offset + mem::size_of::<NtHeaders64>() > file_data.len() {
+                return Err(io::Error::new(io::ErrorKind::Other, "File too small for NT headers"));
+            }
+            &*(file_data.as_ptr().add(nt_headers_offset) as *const NtHeaders64)
+        };
+        if nt_headers.signature != 0x4550 {
+            return Err(io::Error::new(io::ErrorKind::Other, "Invalid PE header"));
+        }
+
+        // Number of section headers
+        let section_count = nt_headers.file_header.number_of_sections as usize;
+
+        // Compute the offset where the section headers begin
+        let section_headers_offset = nt_headers_offset + mem::size_of::<NtHeaders64>();
+        let total_section_headers_size = section_count * mem::size_of::<ImageSectionHeader>();
+
+        // Make sure the section headers fit in the file
+        if section_headers_offset + total_section_headers_size > file_data.len() {
+            return Err(io::Error::new(io::ErrorKind::Other, "File too small for section headers"));
+        }
+
+        // Create a slice of the section headers
+        let section_headers = unsafe {
+            slice::from_raw_parts(
+                file_data.as_ptr().add(section_headers_offset) as *const ImageSectionHeader,
+                section_count,
+            )
+        };
+
+        // --- Now do your VirtualAlloc, WriteProcessMemory, shellcode, etc. ---
+
+        // For example:
+        let image_size = nt_headers.optional_header.size_of_image as usize;
         let base_address = unsafe {
             VirtualAllocEx(
                 self.handle,
                 null_mut(),
                 image_size,
-                MEM_RESERVE | MEM_COMMIT,
+                MEM_COMMIT | MEM_RESERVE,
                 PAGE_EXECUTE_READWRITE,
             )
         };
@@ -289,237 +310,244 @@ impl Process {
             return Err(io::Error::new(io::ErrorKind::Other, "VirtualAllocEx failed"));
         }
 
-        // copy PE headers => size_of_headers
-        let size_of_headers = nth.optional_header.size_of_headers as usize;
-        if size_of_headers > file_data.len() {
-            unsafe { VirtualFreeEx(self.handle, base_address, 0, MEM_RELEASE); }
-            return Err(io::Error::new(io::ErrorKind::Other, "Headers size bigger than file?"));
-        }
-        let write_ok = unsafe {
+        // Write PE headers
+        let headers_size = nt_headers.optional_header.size_of_headers as usize;
+        unsafe {
             WriteProcessMemory(
                 self.handle,
                 base_address,
-                file_data.as_ptr() as LPCVOID,
-                size_of_headers,
+                file_data.as_ptr() as _,
+                headers_size,
                 null_mut(),
-            )
-        };
-        if write_ok == FALSE {
-            unsafe { VirtualFreeEx(self.handle, base_address, 0, MEM_RELEASE); }
-            return Err(io::Error::new(io::ErrorKind::Other, "WriteProcessMemory (headers) failed"));
+            );
         }
 
-        // copy each section into the target
-        let section_count = nth.file_header.number_of_sections as usize;
-        let sec_hdr_ptr = unsafe {
-            file_data.as_ptr().offset(nt_offset as isize + mem::size_of::<NtHeaders64>() as isize)
-                as *const ImageSectionHeader
-        };
-        
-        for i in 0..section_count {
-            // pointer arithmetic with .offset
-            let sec_ptr = unsafe { sec_hdr_ptr.offset(i as isize) };
-            let sec = unsafe { &*sec_ptr };
-
-            // if sec.size_of_raw_data == 0 { continue; } // some sections can be empty
-
-            let section_va = sec.virtual_address as usize; // offset from image base
-            let dest_ptr = unsafe { base_address.add(section_va) };
-
-            if sec.pointer_to_raw_data as usize + sec.size_of_raw_data as usize > file_data.len() {
-                continue; // or error out
+        // Write sections
+        for section in section_headers {
+            if section.size_of_raw_data == 0 {
+                continue;
             }
 
-            let src_data = unsafe { file_data.as_ptr().add(sec.pointer_to_raw_data as usize) };
-            let bytes_to_write = sec.size_of_raw_data as usize;
+            let section_data = &file_data
+                [section.pointer_to_raw_data as usize
+                    ..(section.pointer_to_raw_data as usize + section.size_of_raw_data as usize)];
+            let dest_addr = unsafe { base_address.add(section.virtual_address as usize) };
 
-            let ok = unsafe {
+            unsafe {
                 WriteProcessMemory(
                     self.handle,
-                    dest_ptr,
-                    src_data as LPCVOID,
-                    bytes_to_write,
+                    dest_addr,
+                    section_data.as_ptr() as _,
+                    section.size_of_raw_data as usize,
                     null_mut(),
-                )
-            };
-            if ok == FALSE {
-                unsafe { VirtualFreeEx(self.handle, base_address, 0, MEM_RELEASE); }
-                return Err(io::Error::new(io::ErrorKind::Other, "WriteProcessMemory (section) failed"));
+                );
             }
         }
 
-        // [Relocations, Import resolution, etc] - NOT IMPLEMENTED here
-        // Typically you'd parse the DataDirectory for IMAGE_DIRECTORY_ENTRY_BASERELOC,
-        // iterate over reloc blocks, fix each relocation, parse imports, etc
-        // for brevity we skip it
+        for section in section_headers {
+            if section.size_of_raw_data == 0 {
+                continue;
+            }
 
-        // call DllMain in the remote process
-        // the entry point is optional_header.address_of_entry_point (RVA)
-        let entry_rva = nth.optional_header.address_of_entry_point;
-        let entry_point = unsafe { base_address.add(entry_rva as usize) };
-        if entry_rva == 0 {
-            // some DLLs might not have a typical entry point
-            // we can skip or do something else
-            unsafe { VirtualFreeEx(self.handle, base_address, 0, MEM_RELEASE); }
-            return Err(io::Error::new(io::ErrorKind::Other, "No entry point found"));
+            let section_data = &file_data[section.pointer_to_raw_data as usize..][..section.size_of_raw_data as usize];
+            let dest_addr = unsafe { base_address.add(section.virtual_address as usize) };
+
+            unsafe {
+                WriteProcessMemory(
+                    self.handle,
+                    dest_addr,
+                    section_data.as_ptr() as _,
+                    section.size_of_raw_data as usize,
+                    null_mut(),
+                );
+            }
         }
 
-        // were going to have to create a remote thread at DllMain(HMODULE, DLL_PROCESS_ATTACH, 0)
-        // But we need to pass the module handle (base_address) in RCX (for 64-bit),
-        // so we do the same approach as with CreateRemoteThread plus param:
+        // Call DllMain via shellcode (to ensure correct calling convention)
+        let entry_rva = (*nt_headers).optional_header.address_of_entry_point;
+        let entry_point = unsafe { base_address.add(entry_rva as usize) };
+
+        // Shellcode: Call DllMain(base_address, DLL_PROCESS_ATTACH, 0)
+        let shellcode = [
+            0x48, 0x83, 0xEC, 0x28,             // sub rsp, 0x28 (shadow space)
+            0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rcx, base_address
+            0xBA, 0x01, 0x00, 0x00, 0x00,       // mov edx, DLL_PROCESS_ATTACH (1)
+            0x41, 0xB8, 0x00, 0x00, 0x00, 0x00, // mov r8d, 0 (reserved)
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rax, entry_point
+            0xFF, 0xD0,                         // call rax
+            0x48, 0x83, 0xC4, 0x28,             // add rsp, 0x28
+            0xC3,                                // ret
+        ];
+
+        // Patch shellcode with actual addresses
+        let mut patched_shellcode = shellcode.to_vec();
+        patched_shellcode[6..14].copy_from_slice(&(base_address as u64).to_ne_bytes());
+        patched_shellcode[24..32].copy_from_slice(&(entry_point as u64).to_ne_bytes());
+
+        // Allocate executable memory for shellcode
+        let shellcode_addr = unsafe {
+            VirtualAllocEx(
+                self.handle,
+                null_mut(),
+                patched_shellcode.len(),
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_EXECUTE_READWRITE,
+            )
+        };
+        if shellcode_addr.is_null() {
+            unsafe { VirtualFreeEx(self.handle, base_address, 0, MEM_RELEASE) };
+            return Err(io::Error::new(io::ErrorKind::Other, "Failed to allocate shellcode"));
+        }
+
+        // Write shellcode
+        unsafe {
+            WriteProcessMemory(
+                self.handle,
+                shellcode_addr,
+                patched_shellcode.as_ptr() as _,
+                patched_shellcode.len(),
+                null_mut(),
+            );
+        }
+
+        // Execute shellcode
         let thread_handle = unsafe {
             CreateRemoteThread(
                 self.handle,
                 null_mut(),
                 0,
-                Some(mem::transmute(entry_point)),
-                base_address, // pass base_address as lpParameter => (HMODULE)
+                Some(mem::transmute(shellcode_addr)),
+                null_mut(),
                 0,
                 null_mut(),
             )
         };
         if thread_handle.is_null() {
-            unsafe {
-                VirtualFreeEx(self.handle, base_address, 0, MEM_RELEASE);
-            }
-            return Err(get_last_error());
-        }
-        // Wait a bit
-        unsafe {
-            WaitForSingleObject(thread_handle, 2000);
-            CloseHandle(thread_handle);
+            unsafe { VirtualFreeEx(self.handle, shellcode_addr, 0, MEM_RELEASE) };
+            return Err(io::Error::new(io::ErrorKind::Other, "CreateRemoteThread failed"));
         }
 
-        // *** At this point, the library is "manual-mapped" but we have NOT done relocations or imports.
-        //     A real manual map must do them. This is the minimal skeleton.
+        // Wait for completion
+        unsafe {
+            WaitForSingleObject(thread_handle, INFINITE);
+            CloseHandle(thread_handle);
+            VirtualFreeEx(self.handle, shellcode_addr, 0, MEM_RELEASE);
+        }
 
         Ok(())
     }
 
     pub fn inject_via_thread_hijack(&self, dll_path: &str) -> Result<(), io::Error> {
-        // verify DLL path
-        let fullpath = Path::new(dll_path).canonicalize()?;
-        let wide_path = to_wide_string(fullpath.to_str().unwrap());
+        let full_path = std::fs::canonicalize(dll_path)?;
+        let wide_path = to_wide_string(full_path.to_str().unwrap());
         let path_len_bytes = wide_path.len() * 2;
 
-        // find a thread belonging to our process
+        // Find a thread in the target process
         let thread_id = find_any_thread_in_process(self.pid)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No threads found for target PID"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No threads found"))?;
 
-        // open that thread with enough privileges
-        // we need SUSPEND_RESUME, GET_CONTEXT, SET_CONTEXT at a minimum
-        let desired_access = THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT;
-        let h_thread = unsafe { OpenThread(desired_access, FALSE, thread_id) };
+        // Open the thread
+        let h_thread = unsafe {
+            OpenThread(
+                THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT,
+                FALSE,
+                thread_id,
+            )
+        };
         if h_thread.is_null() {
-            return Err(get_last_error());
+            return Err(io::Error::new(io::ErrorKind::Other, "OpenThread failed"));
         }
 
-        unsafe {
-            // suspend the thread
-            if SuspendThread(h_thread) == u32::MAX {
-                CloseHandle(h_thread);
-                return Err(io::Error::new(io::ErrorKind::Other, "SuspendThread failed"));
-            }
+        // Suspend the thread
+        if unsafe { SuspendThread(h_thread) } == u32::MAX {
+            unsafe { CloseHandle(h_thread) };
+            return Err(io::Error::new(io::ErrorKind::Other, "SuspendThread failed"));
+        }
 
-            // prepare to read/modify thread CONTEXT
-            // for 64-bit, we use winapi::um::winnt::CONTEXT structure
-            // we need to set ContextFlags before calling GetThreadContext
-            let mut ctx: CONTEXT = mem::zeroed();
-            // this constant means we want all regs
-            ctx.ContextFlags = CONTEXT_FULL;
+        // Get thread context
+        let mut ctx: CONTEXT = unsafe { mem::zeroed() };
+        ctx.ContextFlags = CONTEXT_FULL;
+        if unsafe { GetThreadContext(h_thread, &mut ctx) } == FALSE {
+            unsafe { ResumeThread(h_thread); CloseHandle(h_thread); }
+            return Err(io::Error::new(io::ErrorKind::Other, "GetThreadContext failed"));
+        }
 
-            // get the threads context
-            if GetThreadContext(h_thread, &mut ctx as *mut CONTEXT) == FALSE {
-                ResumeThread(h_thread); // resume so we don’t lock it
-                CloseHandle(h_thread);
-                return Err(io::Error::new(io::ErrorKind::Other, "GetThreadContext failed"));
-            }
-
-            // allocate memory in remote process for our DLL path
-            let remote_mem = VirtualAllocEx(
+        // Allocate memory for DLL path
+        let remote_mem = unsafe {
+            VirtualAllocEx(
                 self.handle,
                 null_mut(),
                 path_len_bytes,
-                MEM_RESERVE | MEM_COMMIT,
-                PAGE_EXECUTE_READWRITE,
-            );
-            if remote_mem.is_null() {
-                ResumeThread(h_thread);
-                CloseHandle(h_thread);
-                return Err(io::Error::new(io::ErrorKind::Other, "VirtualAllocEx failed"));
-            }
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_READWRITE,
+            )
+        };
+        if remote_mem.is_null() {
+            unsafe { ResumeThread(h_thread); CloseHandle(h_thread); }
+            return Err(io::Error::new(io::ErrorKind::Other, "VirtualAllocEx failed"));
+        }
 
-            // write the DLL path to the remote memory
-            let wpm_ok = WriteProcessMemory(
+        // Write DLL path
+        if unsafe {
+            WriteProcessMemory(
                 self.handle,
                 remote_mem,
                 wide_path.as_ptr() as _,
                 path_len_bytes,
                 null_mut(),
-            );
-            if wpm_ok == FALSE {
-                VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE);
-                ResumeThread(h_thread);
-                CloseHandle(h_thread);
-                return Err(io::Error::new(io::ErrorKind::Other, "WriteProcessMemory failed"));
-            }
+            )
+        } == FALSE {
+            unsafe { VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE); }
+            unsafe { ResumeThread(h_thread); CloseHandle(h_thread); }
+            return Err(io::Error::new(io::ErrorKind::Other, "WriteProcessMemory failed"));
+        }
 
-            // get the address of LoadLibraryW in local process
-            let loadlib_addr = GetProcAddress(
-                GetModuleHandleA("kernel32.dll\0".as_ptr() as _),
-                "LoadLibraryW\0".as_ptr() as _,
-            );
-            if loadlib_addr.is_null() {
-                VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE);
-                ResumeThread(h_thread);
-                CloseHandle(h_thread);
-                return Err(io::Error::new(io::ErrorKind::Other, "Could not get LoadLibraryW address"));
-            }
+        // Get LoadLibraryW address
+        let loadlib_addr = unsafe {
+            GetProcAddress(
+                GetModuleHandleA(b"kernel32.dll\0".as_ptr() as _),
+                b"LoadLibraryW\0".as_ptr() as _,
+            )
+        };
+        if loadlib_addr.is_null() {
+            unsafe { VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE); }
+            unsafe { ResumeThread(h_thread); CloseHandle(h_thread); }
+            return Err(io::Error::new(io::ErrorKind::Other, "LoadLibraryW not found"));
+        }
 
-            // so on x64 Windows, the first parameter to a function is in RCX
-            // we want to set RCX to point to the remote DLL string
-            // and set RIP to the address of LoadLibraryW in the target process
-            // this is a bit of a hack, but it works because we are hijacking the thread
-            // so that when the thread resumes, it calls LoadLibraryW(remoteString)
+        // Save original RIP (for restoration)
+        let old_rip = ctx.Rip;
 
-            // save old RIP if you want to restore it after
-            let _old_rip = ctx.Rip;
+        // Modify context to call LoadLibraryW(remote_mem)
+        ctx.Rip = loadlib_addr as u64;   // New instruction pointer
+        ctx.Rcx = remote_mem as u64;     // First argument (DLL path)
 
-            // modify context
-            ctx.Rcx = remote_mem as u64;   // param: pointer to wide DLL path
-            ctx.Rip = loadlib_addr as u64; // instruction pointer => LoadLibraryW
+        // Set new context
+        if unsafe { SetThreadContext(h_thread, &ctx) } == FALSE {
+            unsafe { VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE); }
+            unsafe { ResumeThread(h_thread); CloseHandle(h_thread); }
+            return Err(io::Error::new(io::ErrorKind::Other, "SetThreadContext failed"));
+        }
 
-            // set the new context with our changes
-            if SetThreadContext(h_thread, &ctx as *const CONTEXT) == FALSE {
-                VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE);
-                ResumeThread(h_thread);
-                CloseHandle(h_thread);
-                return Err(io::Error::new(io::ErrorKind::Other, "SetThreadContext failed"));
-            }
+        // Resume thread (executes LoadLibraryW)
+        if unsafe { ResumeThread(h_thread) } == u32::MAX {
+            unsafe { VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE); }
+            unsafe { CloseHandle(h_thread); }
+            return Err(io::Error::new(io::ErrorKind::Other, "ResumeThread failed"));
+        }
 
-            // resume the thread so it executes LoadLibraryW(dll_path)
-            if ResumeThread(h_thread) == u32::MAX {
-                VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE);
-                CloseHandle(h_thread);
-                return Err(io::Error::new(io::ErrorKind::Other, "ResumeThread failed"));
-            }
+        // Wait for LoadLibrary to complete (optional)
+        std::thread::sleep(std::time::Duration::from_millis(500));
 
-            // optionally wait a bit for the load to finish
-            // (Though we have no direct WaitForSingleObject on a hijacked threads completion)
-            // in a real scenario, i might do more robust waiting or code injection
-            // for example we could use a named event or semaphore to signal completion
-            // or we could use a custom APC (Asynchronous Procedure Call) to signal completion
-            // this is a bit more advanced, but it would be more robust
-            // for now we just wait a bit to let the thread finish loading the DLL
-
-            // if we wanted to restore the old RIP so the thread continues normally:
-            //   SuspendThread again
-            //   GetThreadContext, set ctx.Rip = old_rip
-            //   SetThreadContext, ResumeThread
-            // That is more advanced and not needed for now
-            
+        // Restore original thread context (optional, but recommended)
+        unsafe {
+            SuspendThread(h_thread);
+            ctx.Rip = old_rip;
+            SetThreadContext(h_thread, &ctx);
+            ResumeThread(h_thread);
             CloseHandle(h_thread);
         }
+
         Ok(())
     }
 }

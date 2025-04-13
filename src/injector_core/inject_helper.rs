@@ -99,15 +99,17 @@ pub struct ImageSectionHeader {
 }
 
 pub type NtCreateThreadEx = unsafe extern "system" fn(
-    h_thread: *mut HANDLE,
-    desired_access: DWORD,
-    object_attributes: *const OBJECT_ATTRIBUTES,
-    process_handle: HANDLE,
-    start_address: LPTHREAD_START_ROUTINE,
-    parameter: LPVOID,
-    create_flags: DWORD,
-    stack_size: SIZE_T,
-    thread_id: *mut DWORD,
+    hThread: *mut HANDLE,
+    DesiredAccess: ACCESS_MASK,
+    ObjectAttributes: *mut c_void,
+    ProcessHandle: HANDLE,
+    lpStartAddress: PVOID,
+    lpParameter: PVOID,
+    CreateFlags: ULONG,
+    ZeroBits: SIZE_T,
+    StackSize: SIZE_T,
+    MaximumStackSize: SIZE_T,
+    AttributeList: PVOID,
 ) -> NTSTATUS;
 
 #[allow(dead_code)]

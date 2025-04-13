@@ -118,7 +118,7 @@ impl MyApp {
                 continue;
             }
 
-            // for now, let’s just call the existing .inject() from the trait (LoadLibrary).
+            // or now, let’s just call the existing .inject() from the trait (LoadLibrary).
             match proc_obj.inject_with_method(&dll_path, method) {
                 Ok(_) => self.log(&format!("Successfully injected: {}", dll_path)),
                 Err(e) => self.log(&format!("Error injecting {}: {}", dll_path, e)),
