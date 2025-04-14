@@ -10,4 +10,4 @@ rfd = "0.15.2"
 
 [dependencies.winapi]
 version = "0.3.9"
-features = ["memoryapi", "minwindef", "ntdef", "winuser", "tlhelp32", "psapi", "securitybaseapi", "libloaderapi", "synchapi", "wow64apiset", "processthreadsapi", "handleapi", "winbase", "impl-default"]
+features = ["memoryapi", "minwindef", "ntdef", "winuser", "tlhelp32", "errhandlingapi", "psapi", "securitybaseapi", "libloaderapi", "synchapi", "wow64apiset", "processthreadsapi", "handleapi", "winbase", "impl-default"]

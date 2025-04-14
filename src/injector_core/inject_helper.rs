@@ -5,6 +5,8 @@ use std::mem::{self};
 use std::time::Duration;
 use std::thread;
 use std::io::{stdout, Write};
+use std::io;
+use std::ptr::null_mut;
 
 /// Minimal PE structures we need
 #[repr(C)]
@@ -196,4 +198,65 @@ pub fn find_any_thread_in_process(pid: u32) -> Option<u32> {
         CloseHandle(h_snapshot);
     }
     None
+}
+
+// A little helper to retrieve and format the last Windows error code:
+pub fn last_error_string() -> String {
+    unsafe {
+        let err_code = GetLastError() as i32;
+        format!(
+            "Win32 Error {} ({})",
+            err_code,
+            io::Error::from_raw_os_error(err_code).to_string()
+        )
+    }
+}
+
+pub fn enable_debug_privilege() -> Result<(), io::Error> {
+    unsafe {
+        // 1) Open current process token
+        let mut token_handle = null_mut();
+        if OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token_handle,
+        ) == 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("OpenProcessToken failed: {}", last_error_string()),
+            ));
+        }
+
+        // 2) Lookup the LUID for SeDebugPrivilege
+        let mut luid = LUID { LowPart: 0, HighPart: 0 };
+        if LookupPrivilegeValueA(
+            null_mut(),
+            b"SeDebugPrivilege\0".as_ptr() as _,
+            &mut luid,
+        ) == 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("LookupPrivilegeValueA failed: {}", last_error_string()),
+            ));
+        }
+
+        // 3) Enable SeDebugPrivilege
+        let mut tp = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+
+        if AdjustTokenPrivileges(token_handle, 0, &mut tp, 0, null_mut(), null_mut()) == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("AdjustTokenPrivileges failed: {}", last_error_string()),
+            ));
+        }
+    }
+    Ok(())
 }

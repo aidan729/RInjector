@@ -255,8 +255,9 @@ impl Process {
     
         Ok(())
     }
-    
-    pub fn inject_via_manualmap(&self, dll_path: &str) -> Result<(), io::Error> {
+
+    // --- manual map injection ---
+    fn inject_via_manualmap(&self, dll_path: &str) -> Result<(), io::Error> {
         let file_data = std::fs::read(dll_path)?;
     
         // Parse DOS header
@@ -469,7 +470,6 @@ impl Process {
         Ok(())
     }
     
-    // Helper to convert RVA to file offset
     fn rva_to_offset(&self, nt_headers: &NtHeaders64, rva: u32) -> Option<usize> {
         let section_headers = unsafe {
             slice::from_raw_parts(
@@ -617,17 +617,26 @@ impl Process {
 
         Ok(())
     }
-
+    // --- manual map injection end ---
+    
     pub fn inject_via_thread_hijack(&self, dll_path: &str) -> Result<(), io::Error> {
+        // 1) Enable debug privilege first
+        enable_debug_privilege()?;
+    
         let full_path = std::fs::canonicalize(dll_path)?;
-        let wide_path = to_wide_string(full_path.to_str().unwrap());
+        let wide_path: Vec<u16> = full_path
+            .to_str()
+            .unwrap()
+            .encode_utf16()
+            .chain(std::iter::once(0)) // null-terminate
+            .collect();
         let path_len_bytes = wide_path.len() * 2;
-
-        // Find a thread in the target process
+    
+        // 2) Find a thread in the target process
         let thread_id = find_any_thread_in_process(self.pid)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No threads found"))?;
-
-        // Open the thread
+    
+        // 3) Open the thread
         let h_thread = unsafe {
             OpenThread(
                 THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT,
@@ -636,24 +645,35 @@ impl Process {
             )
         };
         if h_thread.is_null() {
-            return Err(io::Error::new(io::ErrorKind::Other, "OpenThread failed"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("OpenThread failed: {}", last_error_string()),
+            ));
         }
-
-        // Suspend the thread
-        if unsafe { SuspendThread(h_thread) } == u32::MAX {
+    
+        // 4) Suspend the thread
+        let suspend_count = unsafe { SuspendThread(h_thread) };
+        if suspend_count == u32::MAX {
             unsafe { CloseHandle(h_thread) };
-            return Err(io::Error::new(io::ErrorKind::Other, "SuspendThread failed"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("SuspendThread failed: {}", last_error_string()),
+            ));
         }
-
-        // Get thread context
+    
+        // 5) Get thread context
         let mut ctx: CONTEXT = unsafe { mem::zeroed() };
         ctx.ContextFlags = CONTEXT_FULL;
         if unsafe { GetThreadContext(h_thread, &mut ctx) } == FALSE {
-            unsafe { ResumeThread(h_thread); CloseHandle(h_thread); }
-            return Err(io::Error::new(io::ErrorKind::Other, "GetThreadContext failed"));
+            let err_str = format!("GetThreadContext failed: {}", last_error_string());
+            unsafe {
+                ResumeThread(h_thread);
+                CloseHandle(h_thread);
+            }
+            return Err(io::Error::new(io::ErrorKind::Other, err_str));
         }
-
-        // Allocate memory for DLL path
+    
+        // 6) Allocate memory for DLL path
         let remote_mem = unsafe {
             VirtualAllocEx(
                 self.handle,
@@ -664,26 +684,35 @@ impl Process {
             )
         };
         if remote_mem.is_null() {
-            unsafe { ResumeThread(h_thread); CloseHandle(h_thread); }
-            return Err(io::Error::new(io::ErrorKind::Other, "VirtualAllocEx failed"));
+            let err_str = format!("VirtualAllocEx failed: {}", last_error_string());
+            unsafe {
+                ResumeThread(h_thread);
+                CloseHandle(h_thread);
+            }
+            return Err(io::Error::new(io::ErrorKind::Other, err_str));
         }
-
-        // Write DLL path
-        if unsafe {
+    
+        // 7) Write DLL path
+        let wpm_ok = unsafe {
             WriteProcessMemory(
                 self.handle,
                 remote_mem,
-                wide_path.as_ptr() as _,
+                wide_path.as_ptr() as *const c_void,
                 path_len_bytes,
                 null_mut(),
             )
-        } == FALSE {
-            unsafe { VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE); }
-            unsafe { ResumeThread(h_thread); CloseHandle(h_thread); }
-            return Err(io::Error::new(io::ErrorKind::Other, "WriteProcessMemory failed"));
+        };
+        if wpm_ok == FALSE {
+            let err_str = format!("WriteProcessMemory failed: {}", last_error_string());
+            unsafe {
+                VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE);
+                ResumeThread(h_thread);
+                CloseHandle(h_thread);
+            }
+            return Err(io::Error::new(io::ErrorKind::Other, err_str));
         }
-
-        // Get LoadLibraryW address
+    
+        // 8) Get LoadLibraryW address
         let loadlib_addr = unsafe {
             GetProcAddress(
                 GetModuleHandleA(b"kernel32.dll\0".as_ptr() as _),
@@ -691,44 +720,60 @@ impl Process {
             )
         };
         if loadlib_addr.is_null() {
-            unsafe { VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE); }
-            unsafe { ResumeThread(h_thread); CloseHandle(h_thread); }
-            return Err(io::Error::new(io::ErrorKind::Other, "LoadLibraryW not found"));
+            let err_str = format!("LoadLibraryW not found: {}", last_error_string());
+            unsafe {
+                VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE);
+                ResumeThread(h_thread);
+                CloseHandle(h_thread);
+            }
+            return Err(io::Error::new(io::ErrorKind::Other, err_str));
         }
-
-        // Save original RIP (for restoration)
+    
+        // 9) Save original RIP
         let old_rip = ctx.Rip;
-
-        // Modify context to call LoadLibraryW(remote_mem)
-        ctx.Rip = loadlib_addr as u64;   // New instruction pointer
-        ctx.Rcx = remote_mem as u64;     // First argument (DLL path)
-
-        // Set new context
+    
+        // 10) Modify context to call LoadLibraryW(remote_mem)
+        ctx.Rip = loadlib_addr as u64;  // New instruction pointer
+        ctx.Rcx = remote_mem as u64;    // First argument (DLL path)
+    
         if unsafe { SetThreadContext(h_thread, &ctx) } == FALSE {
-            unsafe { VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE); }
-            unsafe { ResumeThread(h_thread); CloseHandle(h_thread); }
-            return Err(io::Error::new(io::ErrorKind::Other, "SetThreadContext failed"));
+            let err_str = format!("SetThreadContext failed: {}", last_error_string());
+            unsafe {
+                VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE);
+                ResumeThread(h_thread);
+                CloseHandle(h_thread);
+            }
+            return Err(io::Error::new(io::ErrorKind::Other, err_str));
         }
-
-        // Resume thread (executes LoadLibraryW)
+    
+        // 11) Resume thread to execute LoadLibraryW
         if unsafe { ResumeThread(h_thread) } == u32::MAX {
-            unsafe { VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE); }
-            unsafe { CloseHandle(h_thread); }
-            return Err(io::Error::new(io::ErrorKind::Other, "ResumeThread failed"));
+            let err_str = format!("ResumeThread (LoadLibrary call) failed: {}", last_error_string());
+            unsafe {
+                VirtualFreeEx(self.handle, remote_mem, 0, MEM_RELEASE);
+                CloseHandle(h_thread);
+            }
+            return Err(io::Error::new(io::ErrorKind::Other, err_str));
         }
-
-        // Wait for LoadLibrary to complete (optional)
+    
+        // Wait briefly for LoadLibrary to complete
         std::thread::sleep(std::time::Duration::from_millis(500));
-
-        // Restore original thread context (optional, but recommended)
+    
+        // 12) (Optional but recommended) restore original thread context
         unsafe {
-            SuspendThread(h_thread);
+            if SuspendThread(h_thread) == u32::MAX {
+                eprintln!("SuspendThread (restore) failed: {}", last_error_string());
+            }
             ctx.Rip = old_rip;
-            SetThreadContext(h_thread, &ctx);
-            ResumeThread(h_thread);
+            if SetThreadContext(h_thread, &ctx) == FALSE {
+                eprintln!("SetThreadContext (restore) failed: {}", last_error_string());
+            }
+            if ResumeThread(h_thread) == u32::MAX {
+                eprintln!("ResumeThread (restore) failed: {}", last_error_string());
+            }
             CloseHandle(h_thread);
         }
-
+    
         Ok(())
     }
 }

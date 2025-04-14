@@ -14,7 +14,7 @@ pub use winapi::shared::minwindef::{
     TRUE,
     MAX_PATH,
     DWORD,
-    LPVOID
+    LPVOID,
 };
 
 pub use winapi::um::processthreadsapi::{
@@ -63,7 +63,8 @@ pub use winapi::um::winnt::{
     IMAGE_SCN_MEM_WRITE,
     IMAGE_SCN_MEM_READ,
     PAGE_READONLY,
-    PAGE_NOACCESS
+    PAGE_NOACCESS,
+    LUID
 };
 
 pub use winapi::um::memoryapi::{
@@ -88,6 +89,8 @@ pub use winapi::um::winbase::{
     LookupPrivilegeValueA,
     INFINITE
 };
+
+pub use winapi::um::errhandlingapi::GetLastError;
 
 pub use winapi::um::securitybaseapi::AdjustTokenPrivileges;
 
