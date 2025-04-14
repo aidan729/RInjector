@@ -13,7 +13,8 @@ pub use winapi::shared::minwindef::{
     FALSE,
     TRUE,
     MAX_PATH,
-    DWORD
+    DWORD,
+    LPVOID
 };
 
 pub use winapi::um::processthreadsapi::{
@@ -55,13 +56,22 @@ pub use winapi::um::winnt::{
     SE_DEBUG_NAME,
     LUID_AND_ATTRIBUTES,
     ACCESS_MASK,
-    PVOID
+    PVOID,
+    DLL_PROCESS_ATTACH,
+    IMAGE_SCN_MEM_EXECUTE,
+    PAGE_EXECUTE_READ,
+    IMAGE_SCN_MEM_WRITE,
+    IMAGE_SCN_MEM_READ,
+    PAGE_READONLY,
+    PAGE_NOACCESS
 };
 
 pub use winapi::um::memoryapi::{
     WriteProcessMemory,
     VirtualAllocEx,
     VirtualFreeEx,
+    VirtualProtectEx,
+    ReadProcessMemory
 };
 
 pub use winapi::um::libloaderapi::{

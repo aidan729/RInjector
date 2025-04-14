@@ -9,6 +9,18 @@ use super::winapi::*;
 use super::process::*;
 use super::inject_helper::*;
 
+    // Constants needed for relocation
+const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
+const IMAGE_REL_BASED_ABSOLUTE: u16 = 0;
+const IMAGE_REL_BASED_HIGHLOW: u16 = 3;
+const IMAGE_REL_BASED_DIR64: u16 = 10;
+    
+#[repr(C)]
+struct ImageBaseRelocation {
+    virtual_address: u32,
+    size_of_block: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InjectionMethod {
     LoadLibrary,
@@ -244,13 +256,11 @@ impl Process {
         Ok(())
     }
     
-
     pub fn inject_via_manualmap(&self, dll_path: &str) -> Result<(), io::Error> {
         let file_data = std::fs::read(dll_path)?;
-
+    
         // Parse DOS header
         let dos_header = unsafe {
-            // SAFETY: Check bounds before dereferencing
             if mem::size_of::<DosHeader>() > file_data.len() {
                 return Err(io::Error::new(io::ErrorKind::Other, "File too small for DOS header"));
             }
@@ -259,11 +269,10 @@ impl Process {
         if dos_header.e_magic != 0x5A4D {
             return Err(io::Error::new(io::ErrorKind::Other, "Invalid DOS header"));
         }
-
-        // Parse NtHeaders64
+    
+        // Parse NT headers
         let nt_headers_offset = dos_header.e_lfanew as usize;
         let nt_headers = unsafe {
-            // SAFETY: Check that we can read NtHeaders64 at nt_headers_offset
             if nt_headers_offset + mem::size_of::<NtHeaders64>() > file_data.len() {
                 return Err(io::Error::new(io::ErrorKind::Other, "File too small for NT headers"));
             }
@@ -272,35 +281,60 @@ impl Process {
         if nt_headers.signature != 0x4550 {
             return Err(io::Error::new(io::ErrorKind::Other, "Invalid PE header"));
         }
-
-        // Number of section headers
+    
+        // Validate basic PE structure
+        if nt_headers.optional_header.magic != 0x20B { // PE32+
+            return Err(io::Error::new(io::ErrorKind::Other, "Not a valid PE32+ file"));
+        }
+    
+        // Get section headers
         let section_count = nt_headers.file_header.number_of_sections as usize;
-
-        // Compute the offset where the section headers begin
         let section_headers_offset = nt_headers_offset + mem::size_of::<NtHeaders64>();
         let total_section_headers_size = section_count * mem::size_of::<ImageSectionHeader>();
-
-        // Make sure the section headers fit in the file
+    
         if section_headers_offset + total_section_headers_size > file_data.len() {
             return Err(io::Error::new(io::ErrorKind::Other, "File too small for section headers"));
         }
-
-        // Create a slice of the section headers
+    
         let section_headers = unsafe {
             slice::from_raw_parts(
                 file_data.as_ptr().add(section_headers_offset) as *const ImageSectionHeader,
                 section_count,
             )
         };
+    
+        // Validate sections
+        for section in section_headers {
+            // Check for invalid section sizes
+            if section.virtual_address as u64 + section.virtual_size as u64 > nt_headers.optional_header.size_of_image as u64 {
+                return Err(io::Error::new(io::ErrorKind::Other, "Section exceeds image bounds"));
+            }
+    
+            // Check for suspicious section names (allow null terminated ASCII)
+            let mut section_name = Vec::with_capacity(8);
+            for &b in &section.name {
+                if b == 0 { break; } // Stop at null terminator
+                if !b.is_ascii() || b.is_ascii_control() {
+                    return Err(io::Error::new(io::ErrorKind::Other,
+                        format!("Invalid character in section name: {:?}", section.name)));
+                }
+                section_name.push(b);
+            }
 
-        // --- Now do your VirtualAlloc, WriteProcessMemory, shellcode, etc. ---
-
-        // For example:
+            // Allow standard PE sections even if they have padding nulls
+            let section_name = String::from_utf8_lossy(&section_name);
+            if section_name.is_empty() {
+                return Err(io::Error::new(io::ErrorKind::Other,
+                    format!("Empty section name: {:?}", section.name)));
+            }
+        }
+    
+        // Allocate memory for the DLL
         let image_size = nt_headers.optional_header.size_of_image as usize;
         let base_address = unsafe {
             VirtualAllocEx(
                 self.handle,
-                null_mut(),
+                null_mut(), // Don't try to use preferred base address
                 image_size,
                 MEM_COMMIT | MEM_RESERVE,
                 PAGE_EXECUTE_READWRITE,
@@ -309,7 +343,7 @@ impl Process {
         if base_address.is_null() {
             return Err(io::Error::new(io::ErrorKind::Other, "VirtualAllocEx failed"));
         }
-
+    
         // Write PE headers
         let headers_size = nt_headers.optional_header.size_of_headers as usize;
         unsafe {
@@ -321,117 +355,264 @@ impl Process {
                 null_mut(),
             );
         }
-
-        // Write sections
+    
+        // Write sections with strict validation
         for section in section_headers {
             if section.size_of_raw_data == 0 {
                 continue;
             }
-
-            let section_data = &file_data
-                [section.pointer_to_raw_data as usize
-                    ..(section.pointer_to_raw_data as usize + section.size_of_raw_data as usize)];
+    
+            let section_start = section.pointer_to_raw_data as usize;
+            let section_end = section_start + section.size_of_raw_data as usize;
+            
+            // Skip sections that are completely outside the file
+            if section_start >= file_data.len() {
+                continue;
+            }
+    
+            // Calculate safe copy size
+            let copy_size = if section_end > file_data.len() {
+                file_data.len() - section_start
+            } else {
+                section.size_of_raw_data as usize
+            };
+    
+            if copy_size == 0 {
+                continue;
+            }
+    
+            let section_data = &file_data[section_start..section_start + copy_size];
             let dest_addr = unsafe { base_address.add(section.virtual_address as usize) };
-
+    
             unsafe {
                 WriteProcessMemory(
                     self.handle,
                     dest_addr,
                     section_data.as_ptr() as _,
-                    section.size_of_raw_data as usize,
+                    copy_size,
                     null_mut(),
                 );
             }
         }
-
-        for section in section_headers {
-            if section.size_of_raw_data == 0 {
-                continue;
-            }
-
-            let section_data = &file_data[section.pointer_to_raw_data as usize..][..section.size_of_raw_data as usize];
-            let dest_addr = unsafe { base_address.add(section.virtual_address as usize) };
-
-            unsafe {
-                WriteProcessMemory(
-                    self.handle,
-                    dest_addr,
-                    section_data.as_ptr() as _,
-                    section.size_of_raw_data as usize,
-                    null_mut(),
-                );
+    
+        // Perform base relocation if needed
+        if base_address as usize != nt_headers.optional_header.image_base as usize {
+            if let Err(e) = self.perform_relocations(&file_data, base_address, nt_headers) {
+                unsafe { VirtualFreeEx(self.handle, base_address, 0, MEM_RELEASE) };
+                return Err(e);
             }
         }
-
-        // Call DllMain via shellcode (to ensure correct calling convention)
-        let entry_rva = (*nt_headers).optional_header.address_of_entry_point;
-        let entry_point = unsafe { base_address.add(entry_rva as usize) };
-
-        // Shellcode: Call DllMain(base_address, DLL_PROCESS_ATTACH, 0)
-        let shellcode = [
-            0x48, 0x83, 0xEC, 0x28,             // sub rsp, 0x28 (shadow space)
-            0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rcx, base_address
-            0xBA, 0x01, 0x00, 0x00, 0x00,       // mov edx, DLL_PROCESS_ATTACH (1)
-            0x41, 0xB8, 0x00, 0x00, 0x00, 0x00, // mov r8d, 0 (reserved)
-            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rax, entry_point
-            0xFF, 0xD0,                         // call rax
-            0x48, 0x83, 0xC4, 0x28,             // add rsp, 0x28
-            0xC3,                                // ret
-        ];
-
-        // Patch shellcode with actual addresses
-        let mut patched_shellcode = shellcode.to_vec();
-        patched_shellcode[6..14].copy_from_slice(&(base_address as u64).to_ne_bytes());
-        patched_shellcode[24..32].copy_from_slice(&(entry_point as u64).to_ne_bytes());
-
-        // Allocate executable memory for shellcode
-        let shellcode_addr = unsafe {
-            VirtualAllocEx(
-                self.handle,
-                null_mut(),
-                patched_shellcode.len(),
-                MEM_COMMIT | MEM_RESERVE,
-                PAGE_EXECUTE_READWRITE,
-            )
-        };
-        if shellcode_addr.is_null() {
+    
+        // Fix memory protections
+        if let Err(e) = self.set_proper_protections(base_address, nt_headers, section_headers) {
             unsafe { VirtualFreeEx(self.handle, base_address, 0, MEM_RELEASE) };
-            return Err(io::Error::new(io::ErrorKind::Other, "Failed to allocate shellcode"));
+            return Err(e);
         }
-
-        // Write shellcode
-        unsafe {
-            WriteProcessMemory(
-                self.handle,
-                shellcode_addr,
-                patched_shellcode.as_ptr() as _,
-                patched_shellcode.len(),
-                null_mut(),
-            );
-        }
-
-        // Execute shellcode
+    
+        // Call entry point
+        let entry_rva = nt_headers.optional_header.address_of_entry_point;
+        let entry_point = unsafe { base_address.add(entry_rva as usize) };
+    
         let thread_handle = unsafe {
             CreateRemoteThread(
                 self.handle,
                 null_mut(),
                 0,
-                Some(mem::transmute(shellcode_addr)),
-                null_mut(),
-                0,
+                Some(mem::transmute(entry_point)),
+                base_address as _,
+                DLL_PROCESS_ATTACH,
                 null_mut(),
             )
         };
         if thread_handle.is_null() {
-            unsafe { VirtualFreeEx(self.handle, shellcode_addr, 0, MEM_RELEASE) };
+            unsafe { VirtualFreeEx(self.handle, base_address, 0, MEM_RELEASE) };
             return Err(io::Error::new(io::ErrorKind::Other, "CreateRemoteThread failed"));
         }
-
-        // Wait for completion
+    
         unsafe {
             WaitForSingleObject(thread_handle, INFINITE);
             CloseHandle(thread_handle);
-            VirtualFreeEx(self.handle, shellcode_addr, 0, MEM_RELEASE);
+        }
+    
+        Ok(())
+    }
+    
+    fn set_proper_protections(&self, base: LPVOID, _nt_headers: &NtHeaders64, sections: &[ImageSectionHeader]) -> Result<(), io::Error> {
+        // Set proper memory protections for each section
+        for section in sections {
+            let protect = match section.characteristics {
+                x if x & IMAGE_SCN_MEM_EXECUTE != 0 => PAGE_EXECUTE_READ,
+                x if x & IMAGE_SCN_MEM_READ != 0 && x & IMAGE_SCN_MEM_WRITE != 0 => PAGE_READWRITE,
+                x if x & IMAGE_SCN_MEM_READ != 0 => PAGE_READONLY,
+                _ => PAGE_NOACCESS,
+            };
+    
+            let size = section.virtual_size as usize;
+            if size == 0 {
+                continue;
+            }
+    
+            let mut old_protect = 0;
+            let result = unsafe {
+                VirtualProtectEx(
+                    self.handle,
+                    base.add(section.virtual_address as usize),
+                    size,
+                    protect,
+                    &mut old_protect,
+                )
+            };
+            if result == 0 {
+                return Err(io::Error::new(io::ErrorKind::Other, "VirtualProtectEx failed"));
+            }
+        }
+        Ok(())
+    }
+    
+    // Helper to convert RVA to file offset
+    fn rva_to_offset(&self, nt_headers: &NtHeaders64, rva: u32) -> Option<usize> {
+        let section_headers = unsafe {
+            slice::from_raw_parts(
+                (nt_headers as *const _ as *const u8).add(mem::size_of::<NtHeaders64>()) 
+                    as *const ImageSectionHeader,
+                nt_headers.file_header.number_of_sections as usize,
+            )
+        };
+
+        for section in section_headers {
+            if rva >= section.virtual_address && 
+               rva < section.virtual_address + section.virtual_size 
+            {
+                let offset = rva - section.virtual_address;
+                return Some((section.pointer_to_raw_data + offset) as usize);
+            }
+        }
+        None
+    }
+
+    fn perform_relocations(&self, file_data: &[u8], new_base: LPVOID, nt_headers: &NtHeaders64) -> Result<(), io::Error> {
+        let delta = (new_base as u64).wrapping_sub(nt_headers.optional_header.image_base);
+        if delta == 0 {
+            return Ok(()); // No relocation needed
+        }
+
+        // Get the relocation directory
+        let reloc_dir = nt_headers.optional_header.data_directory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+        if reloc_dir.virtual_address == 0 || reloc_dir.size == 0 {
+            return Ok(()); // No relocation table present
+        }
+
+        // Calculate relocation table offset
+        let reloc_offset = self.rva_to_offset(nt_headers, reloc_dir.virtual_address)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid relocation table RVA"))?;
+
+        if reloc_offset + reloc_dir.size as usize > file_data.len() {
+            return Err(io::Error::new(io::ErrorKind::Other, "Relocation table exceeds file bounds"));
+        }
+
+        let reloc_data = &file_data[reloc_offset..reloc_offset + reloc_dir.size as usize];
+        let mut current_offset = 0;
+
+        // Process each relocation block
+        while current_offset + mem::size_of::<ImageBaseRelocation>() <= reloc_data.len() {
+            let block = unsafe {
+                &*(reloc_data.as_ptr().add(current_offset) as *const ImageBaseRelocation)
+            };
+
+            current_offset += mem::size_of::<ImageBaseRelocation>();
+            let block_end = current_offset + block.size_of_block as usize - mem::size_of::<ImageBaseRelocation>();
+
+            if block_end > reloc_data.len() {
+                return Err(io::Error::new(io::ErrorKind::Other, "Invalid relocation block size"));
+            }
+
+            // Calculate page base address
+            let page_base = unsafe { new_base.add(block.virtual_address as usize) };
+
+            // Process each relocation entry in the block
+            let entry_count = (block.size_of_block as usize - mem::size_of::<ImageBaseRelocation>()) / 2;
+            for _ in 0..entry_count {
+                if current_offset + 2 > reloc_data.len() {
+                    break;
+                }
+
+                let entry_data = unsafe {
+                    *reloc_data.as_ptr().add(current_offset).cast::<u16>()
+                };
+                current_offset += 2;
+
+                // Skip padding entries
+                if entry_data == 0 {
+                    continue;
+                }
+
+                // Extract relocation type and offset
+                let reloc_type = entry_data >> 12;
+                let offset = entry_data & 0xFFF;
+
+                // Only handle valid relocation types
+                match reloc_type {
+                    IMAGE_REL_BASED_HIGHLOW | IMAGE_REL_BASED_DIR64 => {
+                        let reloc_addr = unsafe { page_base.add(offset as usize) };
+                        self.apply_relocation(reloc_addr, delta, reloc_type)?;
+                    }
+                    IMAGE_REL_BASED_ABSOLUTE => {} // Skip absolute relocations
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("Unsupported relocation type: {}", reloc_type),
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply_relocation(&self, reloc_addr: LPVOID, delta: u64, reloc_type: u16) -> Result<(), io::Error> {
+        let mut old_value = 0u64;
+        let mut bytes_read = 0;
+
+        // Read the current value at the relocation address
+        unsafe {
+            ReadProcessMemory(
+                self.handle,
+                reloc_addr,
+                &mut old_value as *mut _ as _,
+                match reloc_type {
+                    IMAGE_REL_BASED_HIGHLOW => 4,
+                    IMAGE_REL_BASED_DIR64 => 8,
+                    _ => 0,
+                },
+                &mut bytes_read,
+            );
+        }
+
+        if bytes_read == 0 {
+            return Err(io::Error::new(io::ErrorKind::Other, "Failed to read relocation address"));
+        }
+
+        // Calculate new value
+        let new_value = match reloc_type {
+            IMAGE_REL_BASED_HIGHLOW => (old_value as u32).wrapping_add(delta as u32) as u64,
+            IMAGE_REL_BASED_DIR64 => old_value.wrapping_add(delta),
+            _ => old_value,
+        };
+
+        // Write the new value
+        unsafe {
+            WriteProcessMemory(
+                self.handle,
+                reloc_addr,
+                &new_value as *const _ as _,
+                match reloc_type {
+                    IMAGE_REL_BASED_HIGHLOW => 4,
+                    IMAGE_REL_BASED_DIR64 => 8,
+                    _ => 0,
+                },
+                null_mut(),
+            );
         }
 
         Ok(())

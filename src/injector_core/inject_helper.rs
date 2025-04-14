@@ -51,7 +51,7 @@ pub struct ImageFileHeader {
 
 #[repr(C)]
 pub struct ImageOptionalHeader64 {
-    pub magic: u16, // 0x20b => PE32+ (64-bit)
+    pub magic: u16,
     pub major_linker_version: u8,
     pub minor_linker_version: u8,
     pub size_of_code: u32,
@@ -62,8 +62,8 @@ pub struct ImageOptionalHeader64 {
     pub image_base: u64,
     pub section_alignment: u32,
     pub file_alignment: u32,
-    pub major_os_version: u16,
-    pub minor_os_version: u16,
+    pub major_operating_system_version: u16,
+    pub minor_operating_system_version: u16,
     pub major_image_version: u16,
     pub minor_image_version: u16,
     pub major_subsystem_version: u16,
@@ -71,7 +71,7 @@ pub struct ImageOptionalHeader64 {
     pub win32_version_value: u32,
     pub size_of_image: u32,
     pub size_of_headers: u32,
-    pub checksum: u32,
+    pub check_sum: u32,
     pub subsystem: u16,
     pub dll_characteristics: u16,
     pub size_of_stack_reserve: u64,
@@ -80,7 +80,7 @@ pub struct ImageOptionalHeader64 {
     pub size_of_heap_commit: u64,
     pub loader_flags: u32,
     pub number_of_rva_and_sizes: u32,
-    // data directories follow...
+    pub data_directory: [ImageDataDirectory; IMAGE_NUMBEROF_DIRECTORY_ENTRIES],
 }
 
 // We'll define a minimal `ImageSectionHeader`
@@ -111,6 +111,17 @@ pub type NtCreateThreadEx = unsafe extern "system" fn(
     MaximumStackSize: SIZE_T,
     AttributeList: PVOID,
 ) -> NTSTATUS;
+
+// Add these to your PE structures/mod.rs or at the top of your injector file
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ImageDataDirectory {
+    pub virtual_address: u32,
+    pub size: u32,
+}
+
+pub const IMAGE_NUMBEROF_DIRECTORY_ENTRIES: usize = 16;
+
 
 #[allow(dead_code)]
 pub fn validate_dll_path(dll_path: &str) -> bool {
