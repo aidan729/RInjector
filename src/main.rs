@@ -35,7 +35,7 @@ struct MyApp {
 
     // ---- Logging
     logs: VecDeque<String>,
-    
+
     // Show advanced? (toggle)
     show_advanced: bool,
 }
@@ -150,7 +150,7 @@ impl MyApp {
             dll_path, proc_obj.name, proc_obj.pid
         ));
 
-        // The trait has .eject(dll). This might be unimplemented (todo!).
+        // The trait has .eject(dll) (todo!).
         match proc_obj.eject(&dll_path) {
             Ok(_) => self.log("DLL ejected successfully."),
             Err(e) => self.log(&format!("DLL ejection failed: {}", e)),
@@ -166,7 +166,8 @@ impl eframe::App for MyApp {
             ui.horizontal(|ui| {
                 ui.label("Process Filter:");
                 if ui.text_edit_singleline(&mut self.process_search).changed() {
-                    // Optionally do live refresh here, or wait for user to click refresh
+                    // Optionally do live refresh here, or wait for user to click refresh (might do both)
+                    self.refresh_process_list();
                 }
                 if ui.button("Refresh").clicked() {
                     self.refresh_process_list();
@@ -243,7 +244,7 @@ impl eframe::App for MyApp {
                     });
             });
 
-            // Toggle advanced
+            // Toggle advanced (todo)
             if ui.button("Advanced Options").clicked() {
                 self.show_advanced = !self.show_advanced;
             }
@@ -287,7 +288,6 @@ fn main() -> eframe::Result<()> {
         "Injector",
         options,
         Box::new(|_cc| -> Result<Box<dyn eframe::App>, Box<dyn std::error::Error + Send + Sync>> {
-            // Return `Ok(...)` with your App inside a Box:
             Ok(Box::new(MyApp::default()))
         }),
     )?;
