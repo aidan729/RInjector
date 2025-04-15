@@ -32,7 +32,6 @@ pub struct DosHeader {
     pub e_lfanew: i32, // Offset to NT Headers
 }
 
-// Typically you'd define IMAGE_FILE_HEADER, IMAGE_OPTIONAL_HEADER64, etc. For brevity:
 #[repr(C)]
 pub struct NtHeaders64 {
     pub signature: u32,   // Must be 0x00004550 ('PE\0\0')
@@ -85,7 +84,7 @@ pub struct ImageOptionalHeader64 {
     pub data_directory: [ImageDataDirectory; IMAGE_NUMBEROF_DIRECTORY_ENTRIES],
 }
 
-// We'll define a minimal `ImageSectionHeader`
+// minimal `ImageSectionHeader`
 #[repr(C)]
 pub struct ImageSectionHeader {
     pub name: [u8; 8],
@@ -114,7 +113,6 @@ pub type NtCreateThreadEx = unsafe extern "system" fn(
     AttributeList: PVOID,
 ) -> NTSTATUS;
 
-// Add these to your PE structures/mod.rs or at the top of your injector file
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct ImageDataDirectory {
@@ -189,7 +187,7 @@ pub fn find_any_thread_in_process(pid: u32) -> Option<u32> {
 
         while Thread32Next(h_snapshot, &mut te) != FALSE {
             if te.th32OwnerProcessID == pid {
-                // Found a thread from our target process
+                // found a thread from our target process
                 CloseHandle(h_snapshot);
                 return Some(te.th32ThreadID);
             }
@@ -214,7 +212,7 @@ pub fn last_error_string() -> String {
 
 pub fn enable_debug_privilege() -> Result<(), io::Error> {
     unsafe {
-        // 1) Open current process token
+        // open current process token
         let mut token_handle = null_mut();
         if OpenProcessToken(
             GetCurrentProcess(),
@@ -228,7 +226,7 @@ pub fn enable_debug_privilege() -> Result<(), io::Error> {
             ));
         }
 
-        // 2) Lookup the LUID for SeDebugPrivilege
+        // lookup the LUID for SeDebugPrivilege
         let mut luid = LUID { LowPart: 0, HighPart: 0 };
         if LookupPrivilegeValueA(
             null_mut(),
@@ -242,7 +240,7 @@ pub fn enable_debug_privilege() -> Result<(), io::Error> {
             ));
         }
 
-        // 3) Enable SeDebugPrivilege
+        // enable SeDebugPrivilege
         let mut tp = TOKEN_PRIVILEGES {
             PrivilegeCount: 1,
             Privileges: [LUID_AND_ATTRIBUTES {

@@ -9,12 +9,12 @@ use super::winapi::*;
 use super::process::*;
 use super::inject_helper::*;
 
-    // Constants needed for relocation
+// Constants needed for relocation
 const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
 const IMAGE_REL_BASED_ABSOLUTE: u16 = 0;
 const IMAGE_REL_BASED_HIGHLOW: u16 = 3;
 const IMAGE_REL_BASED_DIR64: u16 = 10;
-    
+
 #[repr(C)]
 struct ImageBaseRelocation {
     virtual_address: u32,
@@ -55,8 +55,8 @@ impl Injector for Process {
         // Reflective DLLs are even more complex, as they may not have a standard entry point.
         // So here we do the standard FreeLibrary approach, I might implement the others later.:
 
-        // 1) Find the module handle in the remote process (by enumerating modules).
-        // 2) Call FreeLibrary in remote process via CreateRemoteThread or NtCreateThreadEx.
+        // 1 - Find the module handle in the remote process (by enumerating modules).
+        // 2 - Call FreeLibrary in remote process via CreateRemoteThread or NtCreateThreadEx.
         // This is just a stub:
         Err(io::Error::new(io::ErrorKind::Other, "Ejection not yet implemented."))
     }
@@ -249,7 +249,7 @@ impl Process {
             WaitForSingleObject(thread_handle, 1000);
             CloseHandle(thread_handle);
     
-            // If you like, free the memory. Sometimes you keep it if the DLL needs it.
+            // free the memory (Sometimes keep it if the DLL needs it.)
             VirtualFreeEx(process_handle, remote_mem, 0, MEM_RELEASE);
         }
     
@@ -260,7 +260,7 @@ impl Process {
     fn inject_via_manualmap(&self, dll_path: &str) -> Result<(), io::Error> {
         let file_data = std::fs::read(dll_path)?;
     
-        // Parse DOS header
+        // parse DOS header
         let dos_header = unsafe {
             if mem::size_of::<DosHeader>() > file_data.len() {
                 return Err(io::Error::new(io::ErrorKind::Other, "File too small for DOS header"));
@@ -271,7 +271,7 @@ impl Process {
             return Err(io::Error::new(io::ErrorKind::Other, "Invalid DOS header"));
         }
     
-        // Parse NT headers
+        // parse NT headers
         let nt_headers_offset = dos_header.e_lfanew as usize;
         let nt_headers = unsafe {
             if nt_headers_offset + mem::size_of::<NtHeaders64>() > file_data.len() {
@@ -283,12 +283,12 @@ impl Process {
             return Err(io::Error::new(io::ErrorKind::Other, "Invalid PE header"));
         }
     
-        // Validate basic PE structure
+        // validate basic PE structure
         if nt_headers.optional_header.magic != 0x20B { // PE32+
             return Err(io::Error::new(io::ErrorKind::Other, "Not a valid PE32+ file"));
         }
     
-        // Get section headers
+        // get section headers
         let section_count = nt_headers.file_header.number_of_sections as usize;
         let section_headers_offset = nt_headers_offset + mem::size_of::<NtHeaders64>();
         let total_section_headers_size = section_count * mem::size_of::<ImageSectionHeader>();
@@ -304,14 +304,14 @@ impl Process {
             )
         };
     
-        // Validate sections
+        // validate sections
         for section in section_headers {
-            // Check for invalid section sizes
+            // check for invalid section sizes
             if section.virtual_address as u64 + section.virtual_size as u64 > nt_headers.optional_header.size_of_image as u64 {
                 return Err(io::Error::new(io::ErrorKind::Other, "Section exceeds image bounds"));
             }
     
-            // Check for suspicious section names (allow null terminated ASCII)
+            // check for suspicious section names (allow null terminated ASCII)
             let mut section_name = Vec::with_capacity(8);
             for &b in &section.name {
                 if b == 0 { break; } // Stop at null terminator
@@ -322,7 +322,7 @@ impl Process {
                 section_name.push(b);
             }
 
-            // Allow standard PE sections even if they have padding nulls
+            // allow standard PE sections even if they have padding nulls
             let section_name = String::from_utf8_lossy(&section_name);
             if section_name.is_empty() {
                 return Err(io::Error::new(io::ErrorKind::Other,
@@ -330,12 +330,12 @@ impl Process {
             }
         }
     
-        // Allocate memory for the DLL
+        // allocate memory for the DLL
         let image_size = nt_headers.optional_header.size_of_image as usize;
         let base_address = unsafe {
             VirtualAllocEx(
                 self.handle,
-                null_mut(), // Don't try to use preferred base address
+                null_mut(), // dont try to use preferred base address
                 image_size,
                 MEM_COMMIT | MEM_RESERVE,
                 PAGE_EXECUTE_READWRITE,
@@ -345,7 +345,7 @@ impl Process {
             return Err(io::Error::new(io::ErrorKind::Other, "VirtualAllocEx failed"));
         }
     
-        // Write PE headers
+        // write PE headers
         let headers_size = nt_headers.optional_header.size_of_headers as usize;
         unsafe {
             WriteProcessMemory(
@@ -357,7 +357,7 @@ impl Process {
             );
         }
     
-        // Write sections with strict validation
+        // write sections with strict validation
         for section in section_headers {
             if section.size_of_raw_data == 0 {
                 continue;
@@ -366,12 +366,12 @@ impl Process {
             let section_start = section.pointer_to_raw_data as usize;
             let section_end = section_start + section.size_of_raw_data as usize;
             
-            // Skip sections that are completely outside the file
+            // skip sections that are completely outside the file
             if section_start >= file_data.len() {
                 continue;
             }
     
-            // Calculate safe copy size
+            // calculate safe copy size
             let copy_size = if section_end > file_data.len() {
                 file_data.len() - section_start
             } else {
@@ -396,7 +396,7 @@ impl Process {
             }
         }
     
-        // Perform base relocation if needed
+        // perform base relocation if needed
         if base_address as usize != nt_headers.optional_header.image_base as usize {
             if let Err(e) = self.perform_relocations(&file_data, base_address, nt_headers) {
                 unsafe { VirtualFreeEx(self.handle, base_address, 0, MEM_RELEASE) };
@@ -404,13 +404,13 @@ impl Process {
             }
         }
     
-        // Fix memory protections
+        // fix memory protections
         if let Err(e) = self.set_proper_protections(base_address, nt_headers, section_headers) {
             unsafe { VirtualFreeEx(self.handle, base_address, 0, MEM_RELEASE) };
             return Err(e);
         }
     
-        // Call entry point
+        // call entry point
         let entry_rva = nt_headers.optional_header.address_of_entry_point;
         let entry_point = unsafe { base_address.add(entry_rva as usize) };
     
@@ -439,7 +439,7 @@ impl Process {
     }
     
     fn set_proper_protections(&self, base: LPVOID, _nt_headers: &NtHeaders64, sections: &[ImageSectionHeader]) -> Result<(), io::Error> {
-        // Set proper memory protections for each section
+        // set proper memory protections for each section
         for section in sections {
             let protect = match section.characteristics {
                 x if x & IMAGE_SCN_MEM_EXECUTE != 0 => PAGE_EXECUTE_READ,
@@ -493,16 +493,16 @@ impl Process {
     fn perform_relocations(&self, file_data: &[u8], new_base: LPVOID, nt_headers: &NtHeaders64) -> Result<(), io::Error> {
         let delta = (new_base as u64).wrapping_sub(nt_headers.optional_header.image_base);
         if delta == 0 {
-            return Ok(()); // No relocation needed
+            return Ok(()); // no relocation needed
         }
 
-        // Get the relocation directory
+        // get the relocation directory
         let reloc_dir = nt_headers.optional_header.data_directory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
         if reloc_dir.virtual_address == 0 || reloc_dir.size == 0 {
             return Ok(()); // No relocation table present
         }
 
-        // Calculate relocation table offset
+        // calculate relocation table offset
         let reloc_offset = self.rva_to_offset(nt_headers, reloc_dir.virtual_address)
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid relocation table RVA"))?;
 
@@ -513,7 +513,7 @@ impl Process {
         let reloc_data = &file_data[reloc_offset..reloc_offset + reloc_dir.size as usize];
         let mut current_offset = 0;
 
-        // Process each relocation block
+        // process each relocation block
         while current_offset + mem::size_of::<ImageBaseRelocation>() <= reloc_data.len() {
             let block = unsafe {
                 &*(reloc_data.as_ptr().add(current_offset) as *const ImageBaseRelocation)
@@ -526,10 +526,10 @@ impl Process {
                 return Err(io::Error::new(io::ErrorKind::Other, "Invalid relocation block size"));
             }
 
-            // Calculate page base address
+            // calculate page base address
             let page_base = unsafe { new_base.add(block.virtual_address as usize) };
 
-            // Process each relocation entry in the block
+            // process each relocation entry in the block
             let entry_count = (block.size_of_block as usize - mem::size_of::<ImageBaseRelocation>()) / 2;
             for _ in 0..entry_count {
                 if current_offset + 2 > reloc_data.len() {
@@ -541,22 +541,22 @@ impl Process {
                 };
                 current_offset += 2;
 
-                // Skip padding entries
+                // skip padding entries
                 if entry_data == 0 {
                     continue;
                 }
 
-                // Extract relocation type and offset
+                // extract relocation type and offset
                 let reloc_type = entry_data >> 12;
                 let offset = entry_data & 0xFFF;
 
-                // Only handle valid relocation types
+                // only handle valid relocation types
                 match reloc_type {
                     IMAGE_REL_BASED_HIGHLOW | IMAGE_REL_BASED_DIR64 => {
                         let reloc_addr = unsafe { page_base.add(offset as usize) };
                         self.apply_relocation(reloc_addr, delta, reloc_type)?;
                     }
-                    IMAGE_REL_BASED_ABSOLUTE => {} // Skip absolute relocations
+                    IMAGE_REL_BASED_ABSOLUTE => {} // skip absolute relocations
                     _ => {
                         return Err(io::Error::new(
                             io::ErrorKind::Other,
@@ -574,7 +574,7 @@ impl Process {
         let mut old_value = 0u64;
         let mut bytes_read = 0;
 
-        // Read the current value at the relocation address
+        // read the current value at the relocation address
         unsafe {
             ReadProcessMemory(
                 self.handle,
@@ -593,14 +593,14 @@ impl Process {
             return Err(io::Error::new(io::ErrorKind::Other, "Failed to read relocation address"));
         }
 
-        // Calculate new value
+        // calculate new value
         let new_value = match reloc_type {
             IMAGE_REL_BASED_HIGHLOW => (old_value as u32).wrapping_add(delta as u32) as u64,
             IMAGE_REL_BASED_DIR64 => old_value.wrapping_add(delta),
             _ => old_value,
         };
 
-        // Write the new value
+        // write the new value
         unsafe {
             WriteProcessMemory(
                 self.handle,
@@ -620,7 +620,7 @@ impl Process {
     // --- manual map injection end ---
     
     pub fn inject_via_thread_hijack(&self, dll_path: &str) -> Result<(), io::Error> {
-        // 1) Enable debug privilege first
+        // enable debug privilege first
         enable_debug_privilege()?;
     
         let full_path = std::fs::canonicalize(dll_path)?;
@@ -628,15 +628,15 @@ impl Process {
             .to_str()
             .unwrap()
             .encode_utf16()
-            .chain(std::iter::once(0)) // null-terminate
+            .chain(std::iter::once(0)) // null terminate
             .collect();
         let path_len_bytes = wide_path.len() * 2;
     
-        // 2) Find a thread in the target process
+        // find a thread in the target process
         let thread_id = find_any_thread_in_process(self.pid)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No threads found"))?;
     
-        // 3) Open the thread
+        // open the thread
         let h_thread = unsafe {
             OpenThread(
                 THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT,
@@ -651,7 +651,7 @@ impl Process {
             ));
         }
     
-        // 4) Suspend the thread
+        // suspend the thread
         let suspend_count = unsafe { SuspendThread(h_thread) };
         if suspend_count == u32::MAX {
             unsafe { CloseHandle(h_thread) };
@@ -661,7 +661,7 @@ impl Process {
             ));
         }
     
-        // 5) Get thread context
+        // get thread context
         let mut ctx: CONTEXT = unsafe { mem::zeroed() };
         ctx.ContextFlags = CONTEXT_FULL;
         if unsafe { GetThreadContext(h_thread, &mut ctx) } == FALSE {
@@ -673,7 +673,7 @@ impl Process {
             return Err(io::Error::new(io::ErrorKind::Other, err_str));
         }
     
-        // 6) Allocate memory for DLL path
+        // allocate memory for DLL path
         let remote_mem = unsafe {
             VirtualAllocEx(
                 self.handle,
@@ -692,7 +692,7 @@ impl Process {
             return Err(io::Error::new(io::ErrorKind::Other, err_str));
         }
     
-        // 7) Write DLL path
+        // write DLL path
         let wpm_ok = unsafe {
             WriteProcessMemory(
                 self.handle,
@@ -712,7 +712,7 @@ impl Process {
             return Err(io::Error::new(io::ErrorKind::Other, err_str));
         }
     
-        // 8) Get LoadLibraryW address
+        // get LoadLibraryW address
         let loadlib_addr = unsafe {
             GetProcAddress(
                 GetModuleHandleA(b"kernel32.dll\0".as_ptr() as _),
@@ -729,12 +729,12 @@ impl Process {
             return Err(io::Error::new(io::ErrorKind::Other, err_str));
         }
     
-        // 9) Save original RIP
+        // save original RIP
         let old_rip = ctx.Rip;
     
-        // 10) Modify context to call LoadLibraryW(remote_mem)
-        ctx.Rip = loadlib_addr as u64;  // New instruction pointer
-        ctx.Rcx = remote_mem as u64;    // First argument (DLL path)
+        // modify context to call LoadLibraryW(remote_mem)
+        ctx.Rip = loadlib_addr as u64;  // new instruction pointer
+        ctx.Rcx = remote_mem as u64;    // first argument (DLL path)
     
         if unsafe { SetThreadContext(h_thread, &ctx) } == FALSE {
             let err_str = format!("SetThreadContext failed: {}", last_error_string());
@@ -746,7 +746,7 @@ impl Process {
             return Err(io::Error::new(io::ErrorKind::Other, err_str));
         }
     
-        // 11) Resume thread to execute LoadLibraryW
+        // resume thread to execute LoadLibraryW
         if unsafe { ResumeThread(h_thread) } == u32::MAX {
             let err_str = format!("ResumeThread (LoadLibrary call) failed: {}", last_error_string());
             unsafe {
@@ -756,10 +756,10 @@ impl Process {
             return Err(io::Error::new(io::ErrorKind::Other, err_str));
         }
     
-        // Wait briefly for LoadLibrary to complete
+        // wait briefly for LoadLibrary to complete
         std::thread::sleep(std::time::Duration::from_millis(500));
     
-        // 12) (Optional but recommended) restore original thread context
+        // restore original thread context
         unsafe {
             if SuspendThread(h_thread) == u32::MAX {
                 eprintln!("SuspendThread (restore) failed: {}", last_error_string());

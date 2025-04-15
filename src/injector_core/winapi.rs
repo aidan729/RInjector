@@ -1,4 +1,3 @@
-// For specifying stack sizes and other pointer-sized fields (64-bit)
 pub use winapi::shared::basetsd::SIZE_T;
 
 pub use winapi::ctypes::c_void;

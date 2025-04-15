@@ -1,10 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
-
 use std::collections::VecDeque;
 use eframe::egui;
 use rfd::FileDialog;
 
-// bring  injector trait into scope so methods like `eject()` work:
+// bring injector trait into scope so methods like `eject()` work
 use injector_core::injector::Injector;
 use injector_core::inject_helper;
 use injector_core::process::Process;
@@ -36,7 +35,7 @@ struct MyApp {
 
     // ---- Logging
     logs: VecDeque<String>,
-
+    
     // Show advanced? (toggle)
     show_advanced: bool,
 }
