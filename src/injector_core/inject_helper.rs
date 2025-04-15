@@ -7,6 +7,8 @@ use std::thread;
 use std::io::{stdout, Write};
 use std::io;
 use std::ptr::null_mut;
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt;
 
 /// Minimal PE structures we need
 #[repr(C)]
@@ -257,4 +259,13 @@ pub fn enable_debug_privilege() -> Result<(), io::Error> {
         }
     }
     Ok(())
+}
+
+/// Helper function to convert a wide-character array (from MODULEENTRY32W) into a Rust String
+pub fn wide_str_to_string(wide: &[u16]) -> String {
+    // find the first null terminator
+    let len = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
+    OsString::from_wide(&wide[..len])
+        .to_string_lossy()
+        .into_owned()
 }

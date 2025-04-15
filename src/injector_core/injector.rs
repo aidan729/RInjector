@@ -48,17 +48,95 @@ impl Injector for Process {
         }
     }
 
-    fn eject(&self, _dll_path: &str) -> Result<(), io::Error> {
-        // Only works for standard LoadLibrary based injection, because we need the HMODULE from that.
-        // For manual map or reflective injection, we have to manually free memory sections, call DllMain, etc.
-        // hijacking a thread is also tricky because we need to restore the original context.
-        // Reflective DLLs are even more complex, as they may not have a standard entry point.
-        // So here we do the standard FreeLibrary approach, I might implement the others later.:
+    fn eject(&self, dll_path: &str) -> Result<(), io::Error> {
+        // resolve the absolute (canonical) path of the DLL so that
+        // we can compare with the path enumerated from the remote process
+        let fullpath = Path::new(dll_path).canonicalize()?;
+        let fullpath_str = fullpath.to_string_lossy().to_lowercase();
 
-        // 1 - Find the module handle in the remote process (by enumerating modules).
-        // 2 - Call FreeLibrary in remote process via CreateRemoteThread or NtCreateThreadEx.
-        // This is just a stub:
-        Err(io::Error::new(io::ErrorKind::Other, "Ejection not yet implemented."))
+        // create a snapshot of the modules in the remote process.
+        // we need the process ID which we can get via GetProcessId(self.handle)
+        let process_id: DWORD = unsafe { GetProcessId(self.handle) };
+        let snapshot_handle = unsafe {
+            CreateToolhelp32Snapshot(
+                TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
+                process_id,
+            )
+        };
+
+        if snapshot_handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::new(io::ErrorKind::Other, "Failed to create module snapshot"));
+        }
+
+        // set up the MODULEENTRY32W structure for iteration
+        let mut module_entry: MODULEENTRY32W = unsafe { mem::zeroed() };
+        module_entry.dwSize = mem::size_of::<MODULEENTRY32W>() as u32;
+
+        let mut target_module: Option<*mut std::ffi::c_void> = None;
+        let mut found = false;
+        if unsafe { Module32FirstW(snapshot_handle, &mut module_entry) } != FALSE {
+            loop {
+                // convert the modules full path (szExePath) to a Rust String
+                let module_path = wide_str_to_string(&module_entry.szExePath);
+                if module_path.to_lowercase() == fullpath_str {
+                    // found our module. record its module handle
+                    target_module = Some(module_entry.hModule as *mut _);
+                    found = true;
+                    break;
+                }
+                // if no more modules, break out
+                if unsafe { Module32NextW(snapshot_handle, &mut module_entry) } == FALSE {
+                    break;
+                }
+            }
+        }
+
+        // clean up the snapshot handle
+        unsafe { CloseHandle(snapshot_handle) };
+
+        if !found {
+            return Err(io::Error::new(io::ErrorKind::Other, "Module not found in remote process"));
+        }
+
+        // get the address of FreeLibrary in the local process, its safe because kernel32.dll is shared
+        let free_library_addr = unsafe {
+            GetProcAddress(
+                GetModuleHandleA(b"kernel32.dll\0".as_ptr() as _),
+                b"FreeLibrary\0".as_ptr() as _,
+            )
+        };
+        if free_library_addr.is_null() {
+            return Err(io::Error::new(io::ErrorKind::Other, "Could not get FreeLibrary address"));
+        }
+
+        // use CreateRemoteThread to call FreeLibrary in the remote process
+        let thread_handle = unsafe {
+            CreateRemoteThread(
+                self.handle,
+                null_mut(),
+                0,
+                Some(mem::transmute(free_library_addr)),
+                target_module.unwrap() as LPVOID,
+                0,
+                null_mut(),
+            )
+        };
+
+        if thread_handle.is_null() {
+            return Err(io::Error::new(io::ErrorKind::Other, format!("CreateRemoteThread failed with error code: {}", unsafe { GetLastError() })));
+        }
+
+        // wait for the remote thread to finish executing
+        let wait_result = unsafe { WaitForSingleObject(thread_handle, 5000) };
+        if wait_result == WAIT_FAILED {
+            // log a warning; not every failure here is fatal...
+            eprintln!("Warning: WaitForSingleObject failed for the remote thread.");
+        }
+
+        // clean up the thread handle.
+        unsafe { CloseHandle(thread_handle) };
+
+        Ok(())
     }
 }
 

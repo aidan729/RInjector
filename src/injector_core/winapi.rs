@@ -1,6 +1,14 @@
 pub use winapi::shared::basetsd::SIZE_T;
-
 pub use winapi::ctypes::c_void;
+
+
+pub use winapi::um::tlhelp32::{
+    TH32CS_SNAPMODULE, 
+    TH32CS_SNAPMODULE32,
+    MODULEENTRY32W,
+    Module32FirstW,
+    Module32NextW
+};
 
 pub use winapi::shared::ntdef::{
     HANDLE,
