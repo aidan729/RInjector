@@ -435,7 +435,7 @@ impl eframe::App for MyApp {
                             let text_rect = rect.shrink(8.0);
                             let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
                             child_ui.horizontal(|ui| {
-                                ui.label("📄");
+                                ui.label("");
                                 ui.label(egui::RichText::new(filename)
                                     .color(egui::Color32::WHITE));
                             });
