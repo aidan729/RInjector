@@ -117,7 +117,7 @@ impl MyApp {
                 continue;
             }
 
-            // or now, let’s just call the existing .inject() from the trait (LoadLibrary).
+            // or now, let's just call the existing .inject() from the trait (LoadLibrary).
             match proc_obj.inject_with_method(&dll_path, method) {
                 Ok(_) => self.log(&format!("Successfully injected: {}", dll_path)),
                 Err(e) => self.log(&format!("Error injecting {}: {}", dll_path, e)),
@@ -156,86 +156,338 @@ impl MyApp {
             Err(e) => self.log(&format!("DLL ejection failed: {}", e)),
         }
     }
+
+    fn setup_custom_style(ctx: &egui::Context) {
+        let mut style = (*ctx.style()).clone();
+        
+        // Modern color scheme - dark theme with accent colors
+        let bg_primary = egui::Color32::from_rgb(24, 25, 28);        // Dark background
+        let bg_secondary = egui::Color32::from_rgb(32, 34, 37);      // Slightly lighter panels
+        let bg_tertiary = egui::Color32::from_rgb(45, 47, 51);       // Input fields, buttons
+        let accent_blue = egui::Color32::from_rgb(68, 138, 255);     // Primary accent
+        let accent_green = egui::Color32::from_rgb(52, 199, 89);     // Success/inject
+        let accent_red = egui::Color32::from_rgb(255, 69, 58);       // Danger/eject
+        let text_primary = egui::Color32::from_rgb(255, 255, 255);   // Main text
+        let text_secondary = egui::Color32::from_rgb(152, 152, 157); // Secondary text
+        let border_color = egui::Color32::from_rgb(60, 62, 68);      // Subtle borders
+
+        // Update visuals
+        style.visuals.dark_mode = true;
+        style.visuals.panel_fill = bg_secondary;
+        style.visuals.window_fill = bg_primary;
+        style.visuals.extreme_bg_color = bg_primary;
+        style.visuals.faint_bg_color = bg_tertiary;
+        style.visuals.code_bg_color = bg_tertiary;
+        
+        // Text colors
+        style.visuals.override_text_color = Some(text_primary);
+        style.visuals.warn_fg_color = text_secondary;
+        
+        // Interactive elements
+        style.visuals.widgets.noninteractive.bg_fill = bg_tertiary;
+        style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, border_color);
+        style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, text_primary);
+        
+        style.visuals.widgets.inactive.bg_fill = bg_tertiary;
+        style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, border_color);
+        style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, text_secondary);
+        
+        style.visuals.widgets.hovered.bg_fill = accent_blue.gamma_multiply(0.3);
+        style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, accent_blue);
+        style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, text_primary);
+        
+        style.visuals.widgets.active.bg_fill = accent_blue.gamma_multiply(0.5);
+        style.visuals.widgets.active.bg_stroke = egui::Stroke::new(2.0, accent_blue);
+        style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, text_primary);
+        
+        // Selection colors
+        style.visuals.selection.bg_fill = accent_blue.gamma_multiply(0.4);
+        style.visuals.selection.stroke = egui::Stroke::new(1.0, accent_blue);
+        
+        // Spacing and sizing for better proportions
+        style.spacing.indent = 16.0;
+        style.spacing.item_spacing = egui::Vec2::new(8.0, 6.0);
+        style.spacing.button_padding = egui::Vec2::new(12.0, 8.0);
+        style.spacing.menu_margin = egui::Margin::same(8.0);
+        
+        // Window styling
+        style.visuals.window_rounding = egui::Rounding::same(8.0);
+        style.visuals.window_shadow = egui::epaint::Shadow::NONE;
+        style.visuals.popup_shadow = egui::epaint::Shadow::NONE;
+        
+        // Widget rounding for modern look
+        style.visuals.widgets.noninteractive.rounding = egui::Rounding::same(6.0);
+        style.visuals.widgets.inactive.rounding = egui::Rounding::same(6.0);
+        style.visuals.widgets.hovered.rounding = egui::Rounding::same(6.0);
+        style.visuals.widgets.active.rounding = egui::Rounding::same(6.0);
+        
+        ctx.set_style(style);
+    }
+
+    fn styled_button(&self, ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
+        let button = egui::Button::new(egui::RichText::new(text).color(egui::Color32::WHITE))
+            .fill(color)
+            .rounding(egui::Rounding::same(6.0));
+        ui.add_sized([80.0, 32.0], button)
+    }
+
+    fn styled_section_header(&self, ui: &mut egui::Ui, text: &str) {
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(text)
+            .size(16.0)
+            .strong()
+            .color(egui::Color32::from_rgb(255, 255, 255)));
+        ui.add_space(4.0);
+        
+        // Modern subtle separator
+        let rect = ui.available_rect_before_wrap();
+        let line_rect = egui::Rect::from_min_size(
+            rect.min,
+            egui::Vec2::new(rect.width(), 1.0)
+        );
+        ui.painter().rect_filled(
+            line_rect,
+            egui::Rounding::ZERO, 
+            egui::Color32::from_rgb(68, 138, 255).gamma_multiply(0.3)
+        );
+        ui.add_space(8.0);
+    }
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Apply custom styling
+        Self::setup_custom_style(ctx);
 
         // === Top Panel: Search and Refresh ===
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Process Filter:");
-                if ui.text_edit_singleline(&mut self.process_search).changed() {
-                    // Optionally do live refresh here, or wait for user to click refresh (might do both)
-                    self.refresh_process_list();
-                }
-                if ui.button("Refresh").clicked() {
-                    self.refresh_process_list();
-                }
+        egui::TopBottomPanel::top("top_panel")
+            .exact_height(60.0)
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    
+                    // App title with icon-like styling
+                    ui.label(egui::RichText::new("DLL Injector")
+                        .size(18.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(68, 138, 255)));
+                    
+                    ui.add_space(32.0);
+                    
+                    // Search section
+                    ui.label(egui::RichText::new("Process Filter:")
+                        .color(egui::Color32::from_rgb(152, 152, 157)));
+                    
+                    let search_response = ui.add_sized(
+                        [200.0, 28.0],
+                        egui::TextEdit::singleline(&mut self.process_search)
+                            .hint_text("Search processes...")
+                    );
+                    
+                    if search_response.changed() {
+                        self.refresh_process_list();
+                    }
+                    
+                    ui.add_space(8.0);
+                    
+                    if self.styled_button(ui, "Refresh", egui::Color32::from_rgb(68, 138, 255)).clicked() {
+                        self.refresh_process_list();
+                    }
+                });
+                ui.add_space(8.0);
             });
-        });
 
         // === Side Panel: Process List ===
-        egui::SidePanel::left("left_panel").show(ctx, |ui| {
-            ui.heading("Processes");
-            ui.separator();
+        egui::SidePanel::left("left_panel")
+            .resizable(true)
+            .default_width(280.0)
+            .width_range(250.0..=400.0)
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                self.styled_section_header(ui, "Process List");
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for (i, proc_obj) in self.process_list.iter().enumerate() {
-                    let is_selected = Some(i) == self.selected_process;
-                    let label = format!("{} (PID: {})", proc_obj.name, proc_obj.pid);
-                    if ui.selectable_label(is_selected, label).clicked() {
-                        self.selected_process = Some(i);
-                    }
-                }
+                // Process count info
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("{} processes", self.process_list.len()))
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(152, 152, 157)));
+                });
+                ui.add_space(8.0);
+
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        for (i, proc_obj) in self.process_list.iter().enumerate() {
+                            let is_selected = Some(i) == self.selected_process;
+                            
+                            // Custom styled process entry
+                            let (rect, response) = ui.allocate_exact_size(
+                                egui::Vec2::new(ui.available_width(), 40.0),
+                                egui::Sense::click()
+                            );
+                            
+                            if response.clicked() {
+                                self.selected_process = Some(i);
+                            }
+                            
+                            // Background with hover effect
+                            let bg_color = if is_selected {
+                                egui::Color32::from_rgb(68, 138, 255).gamma_multiply(0.3)
+                            } else if response.hovered() {
+                                egui::Color32::from_rgb(45, 47, 51)
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            };
+                            
+                            ui.painter().rect_filled(rect, egui::Rounding::same(6.0), bg_color);
+                            
+                            // Border for selected item
+                            if is_selected {
+                                ui.painter().rect_stroke(
+                                    rect, 
+                                    egui::Rounding::same(6.0), 
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(68, 138, 255))
+                                );
+                            }
+                            
+                            // Process name and PID
+                            let text_rect = rect.shrink(8.0);
+                            let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
+                            child_ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(&proc_obj.name)
+                                    .size(13.0)
+                                    .strong()
+                                    .color(egui::Color32::WHITE));
+                                ui.label(egui::RichText::new(format!("PID: {}", proc_obj.pid))
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(152, 152, 157)));
+                            });
+                            
+                            ui.add_space(2.0);
+                        }
+                    });
             });
-        });
 
         // === Central Panel: DLL list, injection method, etc. ===
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("DLL Management");
-            ui.separator();
+            ui.add_space(8.0);
+            self.styled_section_header(ui, "DLL Management");
 
-            // DLL list
-            egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
-                for (i, dll) in self.dll_list.iter().enumerate() {
-                    let is_selected = Some(i) == self.selected_dll;
-                    if ui.selectable_label(is_selected, dll).clicked() {
-                        self.selected_dll = Some(i);
-                    }
+            // DLL list with modern styling
+            ui.group(|ui| {
+                ui.set_min_height(180.0);
+                
+                if self.dll_list.is_empty() {
+                    // Empty state
+                    let rect = ui.available_rect_before_wrap();
+                    let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                    child_ui.centered_and_justified(|ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new("📁")
+                                .size(32.0)
+                                .color(egui::Color32::from_rgb(152, 152, 157)));
+                            ui.label(egui::RichText::new("No DLLs added")
+                                .color(egui::Color32::from_rgb(152, 152, 157)));
+                            ui.label(egui::RichText::new("Click 'Add DLL' to get started")
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(152, 152, 157)));
+                        });
+                    });
+                } else {
+                    egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+                        for (i, dll) in self.dll_list.iter().enumerate() {
+                            let is_selected = Some(i) == self.selected_dll;
+                            
+                            // Extract filename for cleaner display
+                            let filename = std::path::Path::new(dll)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(dll);
+                            
+                            let (rect, response) = ui.allocate_exact_size(
+                                egui::Vec2::new(ui.available_width(), 32.0),
+                                egui::Sense::click()
+                            );
+                            
+                            if response.clicked() {
+                                self.selected_dll = Some(i);
+                            }
+                            
+                            let bg_color = if is_selected {
+                                egui::Color32::from_rgb(52, 199, 89).gamma_multiply(0.3)
+                            } else if response.hovered() {
+                                egui::Color32::from_rgb(45, 47, 51)
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            };
+                            
+                            ui.painter().rect_filled(rect, egui::Rounding::same(4.0), bg_color);
+                            
+                            if is_selected {
+                                ui.painter().rect_stroke(
+                                    rect, 
+                                    egui::Rounding::same(4.0), 
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(52, 199, 89))
+                                );
+                            }
+                            
+                            let text_rect = rect.shrink(8.0);
+                            let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
+                            child_ui.horizontal(|ui| {
+                                ui.label("📄");
+                                ui.label(egui::RichText::new(filename)
+                                    .color(egui::Color32::WHITE));
+                            });
+                        }
+                    });
                 }
             });
 
-            // Buttons for DLL list
+            ui.add_space(12.0);
+
+            // DLL management buttons
             ui.horizontal(|ui| {
-                if ui.button("Add DLL").clicked() {
+                if self.styled_button(ui, "Add DLL", egui::Color32::from_rgb(52, 199, 89)).clicked() {
                     if let Some(path) = FileDialog::new().add_filter("DLL", &["dll"]).pick_file() {
                         let path_str = path.to_string_lossy().to_string();
                         self.log(&format!("Added DLL: {}", path_str));
                         self.dll_list.push(path_str);
                     }
                 }
-                if ui.button("Remove Selected").clicked() {
+                
+                ui.add_space(8.0);
+                
+                if self.styled_button(ui, "Remove", egui::Color32::from_rgb(255, 69, 58)).clicked() {
                     if let Some(idx) = self.selected_dll {
                         let removed = self.dll_list.remove(idx);
                         self.log(&format!("Removed DLL: {}", removed));
                         self.selected_dll = None;
                     }
                 }
-                if ui.button("Clear").clicked() {
-                    self.dll_list.clear();
-                    self.selected_dll = None;
-                    self.log("Cleared all DLL entries.");
+                
+                ui.add_space(8.0);
+                
+                if self.styled_button(ui, "Clear All", egui::Color32::from_rgb(152, 152, 157)).clicked() {
+                    if !self.dll_list.is_empty() {
+                        self.dll_list.clear();
+                        self.selected_dll = None;
+                        self.log("Cleared all DLL entries.");
+                    }
                 }
             });
 
-            ui.separator();
+            ui.add_space(16.0);
+            self.styled_section_header(ui, "Injection Configuration");
 
-            // Injection method combo
+            // Injection method selection with modern combo box
             ui.horizontal(|ui| {
-                ui.label("Injection Method:");
-                egui::ComboBox::from_id_salt("inj_method_combo") // replaced from_id_source => from_id_salt
+                ui.label(egui::RichText::new("Method:")
+                    .color(egui::Color32::from_rgb(152, 152, 157)));
+                
+                egui::ComboBox::from_id_salt("inj_method_combo")
                     .selected_text(format!("{:?}", self.injection_method))
+                    .width(200.0)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.injection_method, InjectionMethod::LoadLibrary, "LoadLibrary");
                         ui.selectable_value(&mut self.injection_method, InjectionMethod::NtCreateThreadEx, "NtCreateThreadEx");
@@ -244,48 +496,130 @@ impl eframe::App for MyApp {
                     });
             });
 
-            // Toggle advanced (todo)
-            if ui.button("Advanced Options").clicked() {
+            ui.add_space(8.0);
+
+            // Advanced options toggle
+            let advanced_btn_color = if self.show_advanced {
+                egui::Color32::from_rgb(68, 138, 255)
+            } else {
+                egui::Color32::from_rgb(100, 100, 100)
+            };
+            
+            if self.styled_button(ui, "Advanced", advanced_btn_color).clicked() {
                 self.show_advanced = !self.show_advanced;
             }
+            
             if self.show_advanced {
+                ui.add_space(8.0);
                 ui.group(|ui| {
-                    ui.label("Extra advanced settings placeholder...");
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("Advanced Options")
+                            .strong()
+                            .color(egui::Color32::from_rgb(68, 138, 255)));
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("• Additional injection parameters")
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(152, 152, 157)));
+                        ui.label(egui::RichText::new("• Process integrity checks")
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(152, 152, 157)));
+                        ui.label(egui::RichText::new("• Custom timing options")
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(152, 152, 157)));
+                    });
                 });
             }
 
-            ui.separator();
+            ui.add_space(24.0);
 
-            // Injection / Ejection actions
+            // Main action buttons with prominent styling
             ui.horizontal(|ui| {
-                if ui.button("Inject").clicked() {
+                let inject_btn = egui::Button::new(
+                    egui::RichText::new("INJECT")
+                        .size(14.0)
+                        .strong()
+                        .color(egui::Color32::WHITE)
+                )
+                .fill(egui::Color32::from_rgb(52, 199, 89))
+                .rounding(egui::Rounding::same(8.0));
+                
+                if ui.add_sized([120.0, 40.0], inject_btn).clicked() {
                     self.inject_selected();
                 }
-                if ui.button("Eject Selected").clicked() {
+                
+                ui.add_space(16.0);
+                
+                let eject_btn = egui::Button::new(
+                    egui::RichText::new("EJECT")
+                        .size(14.0)
+                        .strong()
+                        .color(egui::Color32::WHITE)
+                )
+                .fill(egui::Color32::from_rgb(255, 69, 58))
+                .rounding(egui::Rounding::same(8.0));
+                
+                if ui.add_sized([120.0, 40.0], eject_btn).clicked() {
                     self.eject_selected();
                 }
             });
         });
 
         // === Bottom Panel: Logs ===
-        egui::TopBottomPanel::bottom("log_panel").resizable(true).show(ctx, |ui| {
-            ui.heading("Logs");
-            ui.separator();
-            egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-                for line in &self.logs {
-                    ui.label(line);
-                }
+        egui::TopBottomPanel::bottom("log_panel")
+            .resizable(true)
+            .default_height(120.0)
+            .height_range(80.0..=300.0)
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                self.styled_section_header(ui, "Activity Log");
+                
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for (i, line) in self.logs.iter().enumerate() {
+                            let color = if line.contains("Successfully") || line.contains("ejected successfully") {
+                                egui::Color32::from_rgb(52, 199, 89)
+                            } else if line.contains("Error") || line.contains("failed") {
+                                egui::Color32::from_rgb(255, 69, 58)
+                            } else if line.contains("Found") || line.contains("Refreshing") {
+                                egui::Color32::from_rgb(68, 138, 255)
+                            } else {
+                                egui::Color32::from_rgb(200, 200, 200)
+                            };
+                            
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(format!("{:03}", i + 1))
+                                    .size(10.0)
+                                    .monospace()
+                                    .color(egui::Color32::from_rgb(100, 100, 100)));
+                                ui.label(egui::RichText::new(line)
+                                    .size(12.0)
+                                    .monospace()
+                                    .color(color));
+                            });
+                        }
+                    });
             });
-        });
     }
 }
 
 /// The main entry point
 fn main() -> eframe::Result<()> {
-    let options = eframe::NativeOptions::default();
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1000.0, 700.0])
+            .with_min_inner_size([800.0, 600.0])
+            .with_title("DLL Injector")
+            .with_icon(
+                // You can add an icon here if you have one
+                eframe::icon_data::from_png_bytes(&[]).unwrap_or_default()
+            ),
+        ..Default::default()
+    };
 
     eframe::run_native(
-        "Injector",
+        "DLL Injector",
         options,
         Box::new(|_cc| -> Result<Box<dyn eframe::App>, Box<dyn std::error::Error + Send + Sync>> {
             Ok(Box::new(MyApp::default()))
@@ -294,4 +628,3 @@ fn main() -> eframe::Result<()> {
 
     Ok(())
 }
-
