@@ -12,6 +12,7 @@ A powerful, modern DLL injector written in Rust with a sleek graphical user inte
 - **NtCreateThreadEx** - Advanced kernel level thread creation
 - **Manual Map Injection** - Stealthy injection bypassing PEB module lists
 - **Thread Hijacking** - Context manipulation for stealth injection
+- **AtomBombing** - APC based injection using global atom tables for stealth
 
 ### Modern UI
 - **Dark Theme Interface** - Professional, eye friendly design
@@ -22,6 +23,7 @@ A powerful, modern DLL injector written in Rust with a sleek graphical user inte
 
 ### Advanced Capabilities
 - **Multi DLL Injection** - Inject multiple DLLs simultaneously
+- **Persistent Configuration** - DLL paths saved between sessions
 - **Process Filtering** - Quick search and filter processes
 - **Injection Validation** - Automatic DLL path validation
 - **Error Handling** - Comprehensive error reporting and recovery
@@ -66,6 +68,12 @@ PE parsing -> Section mapping -> Relocation -> Import resolution -> DllMain exec
 SuspendThread() -> GetThreadContext() -> Shellcode injection -> SetThreadContext()
 ```
 
+**AtomBombing**
+```rust
+// APC based injection using atom tables
+Find alertable thread -> Allocate memory -> Write via atoms/APC -> QueueUserAPC() -> Execute
+```
+
 ### UI Framework
 - **egui** - Immediate mode GUI framework
 - **eframe** - Native window management
@@ -80,12 +88,15 @@ SuspendThread() -> GetThreadContext() -> Shellcode injection -> SetThreadContext
 ### Dependencies
 ```toml
 [dependencies]
-eframe = "0.24"
-egui = "0.24"
-rfd = "0.11"
-winapi = { version = "0.3", features = [
-    "winuser", "wingdi", "shellapi", "psapi", "processthreadsapi",
-    "handleapi", "memoryapi", "libloaderapi", "synchapi", "errhandlingapi"
+eframe = "0.30.0"
+egui = "0.30.0"
+rfd = "0.15.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+winapi = { version = "0.3.9", features = [
+    "memoryapi", "minwindef", "ntdef", "winuser", "tlhelp32",
+    "errhandlingapi", "psapi", "securitybaseapi", "libloaderapi",
+    "synchapi", "wow64apiset", "processthreadsapi", "handleapi", "winbase"
 ]}
 ```
 
@@ -172,15 +183,19 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 This software is provided for educational and research purposes only. Users are responsible for ensuring their use complies with applicable laws and regulations. The authors assume no liability for misuse of this software.
 
+## Configuration
+
+RInjector automatically saves your DLL list to `injector_config.json` in the executable directory. This allows DLL paths to persist between sessions, so you don't need to re add them every time.
+
 ## Project Statistics
 
-- **Language**: Rust 🦀
-- **Lines of Code**: ~1,500+
-- **Injection Methods**: 4
+- **Language**: Rust
+- **Lines of Code**: ~2,000+
+- **Injection Methods**: 5
 - **UI Framework**: egui
 - **Platform**: Windows x64
 - **License**: MIT
 
 ---
 
-**Built with ❤️ and Rust** | **For Security Research & Education**
+**Built with Rust** | **For Security Research & Education**
