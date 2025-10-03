@@ -19,6 +19,8 @@ mod injector_core {
     pub mod winapi;
 }
 
+mod config;
+
 /// main egui application
 struct MyApp {
     // ---- Process selection stuff
@@ -38,19 +40,26 @@ struct MyApp {
 
     // Show advanced? (toggle)
     show_advanced: bool,
+
+    // ---- Config
+    config: config::Config,
 }
 
 impl Default for MyApp {
     fn default() -> Self {
+        let config = config::Config::load();
+        let dll_list = config.dll_paths.clone();
+
         Self {
             process_search: String::new(),
             process_list: Vec::new(),
             selected_process: None,
-            dll_list: Vec::new(),
+            dll_list,
             selected_dll: None,
             injection_method: InjectionMethod::LoadLibrary,
             logs: VecDeque::new(),
             show_advanced: false,
+            config,
         }
     }
 }
@@ -452,7 +461,8 @@ impl eframe::App for MyApp {
                     if let Some(path) = FileDialog::new().add_filter("DLL", &["dll"]).pick_file() {
                         let path_str = path.to_string_lossy().to_string();
                         self.log(&format!("Added DLL: {}", path_str));
-                        self.dll_list.push(path_str);
+                        self.dll_list.push(path_str.clone());
+                        self.config.add_dll(path_str);
                     }
                 }
                 
@@ -462,6 +472,7 @@ impl eframe::App for MyApp {
                     if let Some(idx) = self.selected_dll {
                         let removed = self.dll_list.remove(idx);
                         self.log(&format!("Removed DLL: {}", removed));
+                        self.config.remove_dll(&removed);
                         self.selected_dll = None;
                     }
                 }
@@ -472,6 +483,7 @@ impl eframe::App for MyApp {
                     if !self.dll_list.is_empty() {
                         self.dll_list.clear();
                         self.selected_dll = None;
+                        self.config.clear_dlls();
                         self.log("Cleared all DLL entries.");
                     }
                 }
@@ -493,6 +505,7 @@ impl eframe::App for MyApp {
                         ui.selectable_value(&mut self.injection_method, InjectionMethod::NtCreateThreadEx, "NtCreateThreadEx");
                         ui.selectable_value(&mut self.injection_method, InjectionMethod::ManualMap, "ManualMap");
                         ui.selectable_value(&mut self.injection_method, InjectionMethod::ThreadHijack, "ThreadHijack");
+                        ui.selectable_value(&mut self.injection_method, InjectionMethod::AtomBombing, "AtomBombing");
                     });
             });
 

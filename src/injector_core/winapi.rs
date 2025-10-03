@@ -30,7 +30,8 @@ pub use winapi::um::processthreadsapi::{
     GetCurrentProcess,
     OpenProcess,
     OpenProcessToken,
-    CreateRemoteThread
+    CreateRemoteThread,
+    GetExitCodeProcess
 };
 
 pub use winapi::um::handleapi::{
@@ -115,3 +116,69 @@ pub use winapi::um::winnt::{
     CONTEXT, CONTEXT_FULL, /* flags for 64-bit context */
     THREAD_SUSPEND_RESUME, THREAD_GET_CONTEXT, THREAD_SET_CONTEXT,
 };
+
+// AtomBombing specific APIs
+pub use winapi::um::winbase::{
+    GlobalAddAtomA, GlobalAddAtomW, GlobalGetAtomNameA, GlobalGetAtomNameW,
+    GlobalDeleteAtom,
+};
+
+pub use winapi::shared::minwindef::{
+    ATOM,
+};
+
+pub use winapi::um::processthreadsapi::{
+    QueueUserAPC, GetCurrentThread,
+};
+
+pub use winapi::shared::basetsd::{
+    ULONG_PTR,
+};
+
+pub use winapi::um::memoryapi::{
+    VirtualAlloc,
+};
+
+// Additional APIs needed for full AtomBombing
+pub use winapi::um::synchapi::{
+    CreateEventA, SetEvent, WaitForMultipleObjects,
+};
+
+pub use winapi::um::handleapi::{
+    DuplicateHandle,
+};
+
+pub use winapi::um::winbase::{
+    WAIT_OBJECT_0,
+};
+
+// Define constants that may not be available
+pub const DUPLICATE_SAME_ACCESS: u32 = 0x00000002;
+pub const WAIT_TIMEOUT: u32 = 258;
+
+pub use winapi::um::winnt::{
+    CONTEXT_CONTROL,
+};
+
+// NtDll function types for AtomBombing
+pub type NtQueueApcThread = unsafe extern "system" fn(
+    ThreadHandle: HANDLE,
+    ApcRoutine: PVOID,
+    NormalContext: PVOID,
+    SystemArgument1: PVOID,
+    SystemArgument2: PVOID,
+) -> NTSTATUS;
+
+pub type NtSetContextThread = unsafe extern "system" fn(
+    ThreadHandle: HANDLE,
+    ThreadContext: *const CONTEXT,
+) -> NTSTATUS;
+
+// Function pointer structure for shellcode
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionPointers {
+    pub pfn_load_library_a: *mut c_void,
+    pub pfn_get_proc_address: *mut c_void,
+}
+
